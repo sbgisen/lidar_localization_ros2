@@ -259,8 +259,10 @@ void PCLLocalization::initializePubSub()
     "initialpose", rclcpp::SystemDefaultsQoS(),
     std::bind(&PCLLocalization::initialPoseReceived, this, std::placeholders::_1));
 
+  // Use SystemDefaultsQoS to accept both volatile and transient_local publishers
+  // This allows compatibility with various map publishers (e.g., pcd_to_pointcloud)
   map_sub_ = create_subscription<sensor_msgs::msg::PointCloud2>(
-    "map", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable(),
+    "map", rclcpp::SystemDefaultsQoS(),
     std::bind(&PCLLocalization::mapReceived, this, std::placeholders::_1));
 
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
