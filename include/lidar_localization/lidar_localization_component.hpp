@@ -22,6 +22,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "rclcpp_lifecycle/lifecycle_publisher.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
 #include "sensor_msgs/msg/imu.hpp"
@@ -61,6 +62,8 @@ public:
   void odomReceived(const nav_msgs::msg::Odometry::ConstSharedPtr msg);
   void imuReceived(const sensor_msgs::msg::Imu::ConstSharedPtr msg);
   void cloudReceived(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg);
+  void timerPublishPose();
+  void switchMapCallback(const std_msgs::msg::String::ConstSharedPtr msg);
   // void gnssReceived();
 
   tf2_ros::TransformBroadcaster broadcaster_;
@@ -84,6 +87,8 @@ public:
     cloud_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::ConstSharedPtr
     imu_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::ConstSharedPtr
+    map_switch_sub_;
 
   boost::shared_ptr<pcl::Registration<pcl::PointXYZI, pcl::PointXYZI>> registration_;
   pcl::VoxelGrid<pcl::PointXYZI> voxel_grid_filter_;
@@ -134,5 +139,4 @@ public:
   LidarUndistortion lidar_undistortion_;
 
   rclcpp::TimerBase::SharedPtr pose_publish_timer_;
-  void timerPublishPose();
 };

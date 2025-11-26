@@ -270,6 +270,10 @@ void PCLLocalization::initializePubSub()
     "imu", rclcpp::SensorDataQoS(),
     std::bind(&PCLLocalization::imuReceived, this, std::placeholders::_1));
 
+  map_switch_sub_ = create_subscription<std_msgs::msg::String>(
+    "switch_map_path", rclcpp::QoS(rclcpp::KeepLast(1)).reliable(),
+    std::bind(&PCLLocalization::switchMapCallback, this, std::placeholders::_1));
+
   if (enable_timer_publishing_) {
     auto period = std::chrono::duration<double>(1.0 / pose_publish_frequency_);
     pose_publish_timer_ = create_wall_timer(
@@ -553,7 +557,7 @@ void PCLLocalization::cloudReceived(const sensor_msgs::msg::PointCloud2::ConstSh
   corrent_pose_with_cov_stamped_ptr_->pose.pose.position.y = static_cast<double>(final_transformation(1, 3));
   corrent_pose_with_cov_stamped_ptr_->pose.pose.position.z = static_cast<double>(final_transformation(2, 3));
   corrent_pose_with_cov_stamped_ptr_->pose.pose.orientation = quat_msg;
-    
+
   // publish here if timer is not enabled
 
   if (!enable_timer_publishing_){
@@ -681,7 +685,41 @@ void PCLLocalization::timerPublishPose()
     map_to_odom_stamped.header.frame_id = global_frame_id_;
     map_to_odom_stamped.child_frame_id = odom_frame_id_;
     map_to_odom_stamped.transform = tf2::toMsg(map_to_odom_tf);
-    
+
     broadcaster_.sendTransform(map_to_odom_stamped);
   }
+}
+
+void PCLLocalization::switchMapCallback(const std_msgs::msg::String::ConstSharedPtr msg)
+{
+  RCLCPP_INFO(get_logger(), "Received new map path: %s", msg->data.c_str());
+
+  pcl::PointCloud<pcl::PointXYZI>::Ptr new_map_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+  if (pcl::io::loadPCDFile(msg->data, *new_map_cloud) < 0) {
+    RCLCPP_ERROR(get_logger(), "Failed to load map from path: %s", msg->data.c_str());
+    return;
+  }
+
+  RCLCPP_INFO(get_logger(), "Loaded new map with %lu points", new_map_cloud->points.size());
+
+  // Publish map for visualization/debugging
+  sensor_msgs::msg::PointCloud2 map_msg;
+  pcl::toROSMsg(*new_map_cloud, map_msg);
+  map_msg.header.frame_id = global_frame_id_;
+  map_msg.header.stamp = now();
+  initial_map_pub_->publish(map_msg);
+
+  // Set new registration target
+  if (registration_method_ == "GICP" || registration_method_ == "GICP_OMP") {
+    pcl::PointCloud<pcl::PointXYZI>::Ptr filtered_cloud(new pcl::PointCloud<pcl::PointXYZI>);
+    voxel_grid_filter_.setInputCloud(new_map_cloud);
+    voxel_grid_filter_.filter(*filtered_cloud);
+    registration_->setInputTarget(filtered_cloud);
+  } else {
+    registration_->setInputTarget(new_map_cloud);
+  }
+
+  map_path_ = msg->data;
+  map_recieved_ = true;
+  RCLCPP_INFO(get_logger(), "Switched map and reinitialized registration target");
 }
