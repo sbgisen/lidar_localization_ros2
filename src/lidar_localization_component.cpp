@@ -88,44 +88,49 @@ CallbackReturn PCLLocalization::on_activate(const rclcpp_lifecycle::State &)
   }
 
   if (use_pcd_map_) {
-    pcl::PointCloud<pcl::PointXYZI>::Ptr map_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
-    // load a pcd or ply file
-    if (map_path_.rfind(".pcd") != std::string::npos) {
-      RCLCPP_INFO(get_logger(), "Loading pcd map from: %s", map_path_.c_str());
-      if (pcl::io::loadPCDFile(map_path_, *map_cloud_ptr) == -1) {
-        RCLCPP_ERROR(get_logger(), "Failed to load pcd file: %s", map_path_.c_str());
+    // Check if map_path is provided and non-empty
+    if (!map_path_.empty()) {
+      pcl::PointCloud<pcl::PointXYZI>::Ptr map_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
+      // load a pcd or ply file
+      if (map_path_.rfind(".pcd") != std::string::npos) {
+        RCLCPP_INFO(get_logger(), "Loading pcd map from: %s", map_path_.c_str());
+        if (pcl::io::loadPCDFile(map_path_, *map_cloud_ptr) == -1) {
+          RCLCPP_ERROR(get_logger(), "Failed to load pcd file: %s", map_path_.c_str());
+          return CallbackReturn::FAILURE;
+        }
+      } else if (map_path_.rfind(".ply") != std::string::npos) {
+        RCLCPP_INFO(get_logger(), "Loading ply map from: %s", map_path_.c_str());
+        if (pcl::io::loadPLYFile(map_path_, *map_cloud_ptr) == -1) {
+          RCLCPP_ERROR(get_logger(), "Failed to load ply file: %s", map_path_.c_str());
+          return CallbackReturn::FAILURE;
+        }
+      } else {
+        RCLCPP_ERROR(
+            get_logger(), "Unsupported map file format. Please use .pcd or .ply: %s",
+            map_path_.c_str());
         return CallbackReturn::FAILURE;
       }
-    } else if (map_path_.rfind(".ply") != std::string::npos) {
-      RCLCPP_INFO(get_logger(), "Loading ply map from: %s", map_path_.c_str());
-      if (pcl::io::loadPLYFile(map_path_, *map_cloud_ptr) == -1) {
-        RCLCPP_ERROR(get_logger(), "Failed to load ply file: %s", map_path_.c_str());
-        return CallbackReturn::FAILURE;
+
+      RCLCPP_INFO(get_logger(), "Map Size %ld", map_cloud_ptr->size());
+      sensor_msgs::msg::PointCloud2::SharedPtr map_msg_ptr(new sensor_msgs::msg::PointCloud2);
+      pcl::toROSMsg(*map_cloud_ptr, *map_msg_ptr);
+      map_msg_ptr->header.frame_id = global_frame_id_;
+      initial_map_pub_->publish(*map_msg_ptr);
+      RCLCPP_INFO(get_logger(), "Initial Map Published");
+
+      if (registration_method_ == "GICP" || registration_method_ == "GICP_OMP") {
+        pcl::PointCloud<pcl::PointXYZI>::Ptr filtered_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>());
+        voxel_grid_filter_.setInputCloud(map_cloud_ptr);
+        voxel_grid_filter_.filter(*filtered_cloud_ptr);
+        registration_->setInputTarget(filtered_cloud_ptr);
+      } else {
+        registration_->setInputTarget(map_cloud_ptr);
       }
+
+      map_recieved_ = true;
     } else {
-      RCLCPP_ERROR(
-          get_logger(), "Unsupported map file format. Please use .pcd or .ply: %s",
-          map_path_.c_str());
-      return CallbackReturn::FAILURE;
+      RCLCPP_WARN(get_logger(), "map_path is empty. Node will start without an initial map. Use the switch_map_path topic to load a map.");
     }
-
-    RCLCPP_INFO(get_logger(), "Map Size %ld", map_cloud_ptr->size());
-    sensor_msgs::msg::PointCloud2::SharedPtr map_msg_ptr(new sensor_msgs::msg::PointCloud2);
-    pcl::toROSMsg(*map_cloud_ptr, *map_msg_ptr);
-    map_msg_ptr->header.frame_id = global_frame_id_;
-    initial_map_pub_->publish(*map_msg_ptr);
-    RCLCPP_INFO(get_logger(), "Initial Map Published");
-
-    if (registration_method_ == "GICP" || registration_method_ == "GICP_OMP") {
-      pcl::PointCloud<pcl::PointXYZI>::Ptr filtered_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>());
-      voxel_grid_filter_.setInputCloud(map_cloud_ptr);
-      voxel_grid_filter_.filter(*filtered_cloud_ptr);
-      registration_->setInputTarget(filtered_cloud_ptr);
-    } else {
-      registration_->setInputTarget(map_cloud_ptr);
-    }
-
-    map_recieved_ = true;
   }
 
   RCLCPP_INFO(get_logger(), "Activating end");
