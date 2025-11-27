@@ -386,7 +386,7 @@ void PCLLocalization::mapReceived(const sensor_msgs::msg::PointCloud2::SharedPtr
 void PCLLocalization::odomReceived(const nav_msgs::msg::Odometry::ConstSharedPtr msg)
 {
   if (!use_odom_) {return;}
-  RCLCPP_INFO(get_logger(), "odomReceived");
+  RCLCPP_DEBUG(get_logger(), "odomReceived");
 
   double current_odom_received_time = msg->header.stamp.sec +
     msg->header.stamp.nanosec * 1e-9;
@@ -483,7 +483,7 @@ void PCLLocalization::cloudReceived(const sensor_msgs::msg::PointCloud2::ConstSh
   }
 
   if (!map_recieved_ || !initialpose_recieved_) {return;}
-  RCLCPP_INFO(get_logger(), "cloudReceived");
+  RCLCPP_DEBUG(get_logger(), "cloudReceived");
   pcl::PointCloud<pcl::PointXYZI>::Ptr cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
   pcl::fromROSMsg(*msg, *cloud_ptr);
 
