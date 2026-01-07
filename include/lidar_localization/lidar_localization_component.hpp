@@ -36,6 +36,7 @@
 #include <pclomp/gicp_omp_impl.hpp>
 
 #include "lidar_localization/lidar_undistortion.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 
 using namespace std::chrono_literals;
 
@@ -84,12 +85,21 @@ public:
     cloud_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::ConstSharedPtr
     imu_sub_;
+  rclcpp::TimerBase::SharedPtr map_timer_;
+  sensor_msgs::msg::PointCloud2::SharedPtr last_map_msg_;
+  double map_pub_hz_{0.1}; 
+
+  rcl_interfaces::msg::SetParametersResult
+  onParamChange(const std::vector<rclcpp::Parameter> & params);
+
 
   boost::shared_ptr<pcl::Registration<pcl::PointXYZI, pcl::PointXYZI>> registration_;
   pcl::VoxelGrid<pcl::PointXYZI> voxel_grid_filter_;
   geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr corrent_pose_with_cov_stamped_ptr_;
   nav_msgs::msg::Path::SharedPtr path_ptr_;
   sensor_msgs::msg::PointCloud2::ConstSharedPtr last_scan_ptr_;
+  
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr param_cb_handle_;
 
   bool map_recieved_{false};
   bool initialpose_recieved_{false};

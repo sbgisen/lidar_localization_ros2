@@ -38,9 +38,47 @@ PCLLocalization::PCLLocalization(const rclcpp::NodeOptions & options)
   declare_parameter("enable_debug", false);
   declare_parameter("enable_timer_publishing", false);
   declare_parameter("pose_publish_frequency", 10.0);
+
+  // ★追加：パラメータ更新コールバック登録
+  param_cb_handle_ = this->add_on_set_parameters_callback(
+    std::bind(&PCLLocalization::onParamChange, this, std::placeholders::_1)
+  );
+  last_odom_received_time_ = 0.0;
 }
 
 using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+
+// ★追加：パラメータ更新コールバック（use_odomだけ見る）
+rcl_interfaces::msg::SetParametersResult
+PCLLocalization::onParamChange(const std::vector<rclcpp::Parameter> & params)
+{
+  for (const auto & p : params) {
+    if (p.get_name() == "use_odom") {
+      if (p.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+        rcl_interfaces::msg::SetParametersResult ng;
+        ng.successful = false;
+        ng.reason = "use_odom must be bool";
+        return ng;
+      }
+
+      const bool new_use_odom = p.as_bool();
+      if (new_use_odom != use_odom_) {
+        use_odom_ = new_use_odom;
+
+        // ★重要：切替直後のdt計算が破綻しないようにリセット
+        last_odom_received_time_ = 0.0;
+
+        RCLCPP_WARN(get_logger(), "use_odom changed to %s",
+                    use_odom_ ? "true" : "false");
+      }
+    }
+  }
+
+  rcl_interfaces::msg::SetParametersResult ok;
+  ok.successful = true;
+  ok.reason = "ok";
+  return ok;
+}
 
 CallbackReturn PCLLocalization::on_configure(const rclcpp_lifecycle::State &)
 {
@@ -378,6 +416,12 @@ void PCLLocalization::odomReceived(const nav_msgs::msg::Odometry::ConstSharedPtr
 
   double current_odom_received_time = msg->header.stamp.sec +
     msg->header.stamp.nanosec * 1e-9;
+
+  // ★追加：切替直後/初回は基準合わせして終了（dt暴れ回避）
+  if (last_odom_received_time_ <= 0.0) {
+    last_odom_received_time_ = current_odom_received_time;
+    return;
+  }
   double dt_odom = current_odom_received_time - last_odom_received_time_;
   last_odom_received_time_ = current_odom_received_time;
   if (dt_odom > 1.0 /* [sec] */) {
