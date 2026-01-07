@@ -374,7 +374,7 @@ void PCLLocalization::mapReceived(const sensor_msgs::msg::PointCloud2::SharedPtr
 
 void PCLLocalization::odomReceived(const nav_msgs::msg::Odometry::ConstSharedPtr msg)
 {
-  if (!use_odom_) {return;}
+  if (!use_odom_ || !initialpose_recieved_) {return;}
   RCLCPP_INFO(get_logger(), "odomReceived");
 
   double current_odom_received_time = msg->header.stamp.sec +
