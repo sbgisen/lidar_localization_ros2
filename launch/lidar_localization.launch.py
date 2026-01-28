@@ -36,6 +36,11 @@ def generate_launch_description():
         description='Input Odometry topic name for /odom'
     ))
     ld.add_action(launch.actions.DeclareLaunchArgument(
+        'pcd_map',
+        default_value='',
+        description='Path to PCD map file (optional override)'
+    ))
+    ld.add_action(launch.actions.DeclareLaunchArgument(
         'localization_param_file',
         default_value=os.path.join(
             get_package_share_directory('lidar_localization_ros2'),
@@ -48,6 +53,7 @@ def generate_launch_description():
     cloud_topic = launch.substitutions.LaunchConfiguration('cloud_topic')
     imu_topic   = launch.substitutions.LaunchConfiguration('imu_topic')
     odom_topic  = launch.substitutions.LaunchConfiguration('odom_topic')
+    pcd_map = launch.substitutions.LaunchConfiguration('pcd_map')
     param_file  = launch.substitutions.LaunchConfiguration('localization_param_file')
 
     lidar_localization = launch_ros.actions.LifecycleNode(
@@ -55,7 +61,7 @@ def generate_launch_description():
         namespace='',
         package='lidar_localization_ros2',
         executable='lidar_localization_node',
-        parameters=[param_file],
+        parameters=[param_file, {'map_path': pcd_map}],
         remappings=[
             ('/cloud', cloud_topic),
             ('/imu',   imu_topic),
