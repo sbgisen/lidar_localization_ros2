@@ -34,6 +34,8 @@ PCLLocalization::PCLLocalization(const rclcpp::NodeOptions & options)
   declare_parameter("use_odom", false);
   declare_parameter("use_imu", false);
   declare_parameter("enable_debug", false);
+  declare_parameter("viz_downsample", false);
+  declare_parameter("viz_voxel_leaf_size", 0.5);
 }
 
 using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
@@ -113,9 +115,17 @@ CallbackReturn PCLLocalization::on_activate(const rclcpp_lifecycle::State &)
     } else {
       pcl::io::loadPLYFile(map_path_, map_cloud_viz);
     }
-    pcl::PCLPointCloud2 map_cloud_viz_filtered;
     sensor_msgs::msg::PointCloud2::SharedPtr map_msg_ptr(new sensor_msgs::msg::PointCloud2);
-    pcl_conversions::moveFromPCL(map_cloud_viz_filtered, *map_msg_ptr);
+    if (viz_downsample_) {
+      pcl::PCLPointCloud2 map_cloud_viz_filtered;
+      pcl::VoxelGrid<pcl::PCLPointCloud2> voxel_viz;
+      voxel_viz.setInputCloud(std::make_shared<pcl::PCLPointCloud2>(map_cloud_viz));
+      voxel_viz.setLeafSize(viz_voxel_leaf_size_, viz_voxel_leaf_size_, viz_voxel_leaf_size_);
+      voxel_viz.filter(map_cloud_viz_filtered);
+      pcl_conversions::moveFromPCL(map_cloud_viz_filtered, *map_msg_ptr);
+    } else {
+      pcl_conversions::moveFromPCL(map_cloud_viz, *map_msg_ptr);
+    }
     map_msg_ptr->header.frame_id = global_frame_id_;
     initial_map_pub_->publish(*map_msg_ptr);
     RCLCPP_INFO(get_logger(), "Initial Map Published");
@@ -208,6 +218,8 @@ void PCLLocalization::initializeParameters()
   get_parameter("use_odom", use_odom_);
   get_parameter("use_imu", use_imu_);
   get_parameter("enable_debug", enable_debug_);
+  get_parameter("viz_downsample", viz_downsample_);
+  get_parameter("viz_voxel_leaf_size", viz_voxel_leaf_size_);
 
   RCLCPP_INFO(get_logger(),"global_frame_id: %s", global_frame_id_.c_str());
   RCLCPP_INFO(get_logger(),"odom_frame_id: %s", odom_frame_id_.c_str());
