@@ -106,8 +106,16 @@ CallbackReturn PCLLocalization::on_activate(const rclcpp_lifecycle::State &)
     }
 
     RCLCPP_INFO(get_logger(), "Map Size %ld", map_cloud_ptr->size());
+
+    pcl::PCLPointCloud2 map_cloud_viz;
+    if (map_path_.rfind(".pcd") != std::string::npos) {
+      pcl::io::loadPCDFile(map_path_, map_cloud_viz);
+    } else {
+      pcl::io::loadPLYFile(map_path_, map_cloud_viz);
+    }
+    pcl::PCLPointCloud2 map_cloud_viz_filtered;
     sensor_msgs::msg::PointCloud2::SharedPtr map_msg_ptr(new sensor_msgs::msg::PointCloud2);
-    pcl::toROSMsg(*map_cloud_ptr, *map_msg_ptr);
+    pcl_conversions::moveFromPCL(map_cloud_viz_filtered, *map_msg_ptr);
     map_msg_ptr->header.frame_id = global_frame_id_;
     initial_map_pub_->publish(*map_msg_ptr);
     RCLCPP_INFO(get_logger(), "Initial Map Published");
