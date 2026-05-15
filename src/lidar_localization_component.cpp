@@ -384,88 +384,9 @@ CallbackReturn PCLLocalization::on_activate(const rclcpp_lifecycle::State &)
   }
 
   if (use_pcd_map_) {
-    pcl::PointCloud<pcl::PointXYZI>::Ptr map_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
-    pcl::PCLPointCloud2 raw_map_cloud;
-    bool map_has_intensity = true;
-    // load a pcd or ply file
-    if (map_path_.rfind(".pcd") != std::string::npos) {
-      RCLCPP_INFO(get_logger(), "Loading pcd map from: %s", map_path_.c_str());
-      if (pcl::io::loadPCDFile(map_path_, raw_map_cloud) == -1) {
-        RCLCPP_ERROR(get_logger(), "Failed to load pcd file: %s", map_path_.c_str());
-        return CallbackReturn::FAILURE;
-      }
-    } else if (map_path_.rfind(".ply") != std::string::npos) {
-      RCLCPP_INFO(get_logger(), "Loading ply map from: %s", map_path_.c_str());
-      if (pcl::io::loadPLYFile(map_path_, raw_map_cloud) == -1) {
-        RCLCPP_ERROR(get_logger(), "Failed to load ply file: %s", map_path_.c_str());
-        return CallbackReturn::FAILURE;
-      }
-    } else {
-      RCLCPP_ERROR(
-          get_logger(), "Unsupported map file format. Please use .pcd or .ply: %s",
-          map_path_.c_str());
+    if (!loadMapFromPath(map_path_)) {
       return CallbackReturn::FAILURE;
     }
-
-    map_has_intensity = convert_pcl_cloud_to_xyzi(raw_map_cloud, *map_cloud_ptr);
-    if (!map_has_intensity) {
-      RCLCPP_WARN(
-        get_logger(),
-        "Map point cloud does not contain intensity. Falling back to xyz with zero intensity.");
-    }
-
-    RCLCPP_INFO(get_logger(), "Map Size %ld", map_cloud_ptr->size());
-    if (!map_cloud_ptr->empty()) {
-      pcl::getMinMax3D(*map_cloud_ptr, map_min_pt_, map_max_pt_);
-      map_bounds_valid_ = true;
-    } else {
-      map_bounds_valid_ = false;
-    }
-    sensor_msgs::msg::PointCloud2::SharedPtr map_msg_ptr(new sensor_msgs::msg::PointCloud2);
-    if (viz_downsample_) {
-      pcl::PCLPointCloud2 map_cloud_viz_filtered;
-      pcl::VoxelGrid<pcl::PCLPointCloud2> voxel_viz;
-      voxel_viz.setInputCloud(std::make_shared<pcl::PCLPointCloud2>(raw_map_cloud));
-      voxel_viz.setLeafSize(viz_voxel_leaf_size_, viz_voxel_leaf_size_, viz_voxel_leaf_size_);
-      voxel_viz.filter(map_cloud_viz_filtered);
-      pcl_conversions::moveFromPCL(map_cloud_viz_filtered, *map_msg_ptr);
-    } else {
-      pcl_conversions::moveFromPCL(raw_map_cloud, *map_msg_ptr);
-    }
-    map_msg_ptr->header.frame_id = global_frame_id_;
-    initial_map_pub_->publish(*map_msg_ptr);
-    RCLCPP_INFO(get_logger(), "Initial Map Published");
-
-    // Store full map for local cropping (GICP methods)
-    use_local_map_crop_ = enable_local_map_crop_ || uses_filtered_target(registration_method_);
-    if (use_local_map_crop_) {
-      // Keep the raw full map and only voxel-filter the cropped local target per scan.
-      full_map_cloud_ptr_ = map_cloud_ptr;
-      RCLCPP_INFO(get_logger(), "Local map cropping enabled. Full map: %ld pts, radius: %.0fm",
-                  full_map_cloud_ptr_->size(), local_map_radius_);
-      // Avoid building a full-map NDT target here. It can overflow on city-scale maps.
-      if (supports_ndt_initializer(registration_method_)) {
-        use_ndt_initializer_ = true;
-        ndt_init_scan_count_ = 0;
-        ndt_initializer_.reset(
-          new pclomp::NormalDistributionsTransform<pcl::PointXYZI, pcl::PointXYZI>());
-        ndt_initializer_->setStepSize(ndt_step_size_);
-        ndt_initializer_->setResolution(ndt_resolution_);
-        ndt_initializer_->setTransformationEpsilon(transform_epsilon_);
-        ndt_initializer_->setNumThreads(
-          ndt_num_threads_ > 0 ? ndt_num_threads_ : omp_get_max_threads());
-        ndt_initializer_->setInputTarget(map_cloud_ptr);
-        RCLCPP_INFO(get_logger(), "NDT initializer created (%d scans before GICP switch)",
-                    ndt_init_scans_required_);
-      } else {
-        use_ndt_initializer_ = false;
-        ndt_initializer_.reset();
-      }
-    } else {
-      registration_->setInputTarget(map_cloud_ptr);
-    }
-
-    map_recieved_ = true;
   }
 
   // Start Nav2 bond if available
@@ -540,6 +461,7 @@ void PCLLocalization::releaseRuntimeResources(bool leak_target_clouds_for_shutdo
 
   initial_pose_sub_.reset();
   map_sub_.reset();
+  map_switch_sub_.reset();
   odom_sub_.reset();
   twist_sub_.reset();
   cloud_sub_.reset();
@@ -964,6 +886,10 @@ void PCLLocalization::initializePubSub()
     "map", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable(),
     std::bind(&PCLLocalization::mapReceived, this, std::placeholders::_1));
 
+  map_switch_sub_ = create_subscription<std_msgs::msg::String>(
+    "map_switch", rclcpp::QoS(rclcpp::KeepLast(1)).transient_local().reliable(),
+    std::bind(&PCLLocalization::switchMapCallback, this, std::placeholders::_1));
+
   odom_sub_ = create_subscription<nav_msgs::msg::Odometry>(
     "odom", rclcpp::SensorDataQoS(),
     std::bind(&PCLLocalization::odomReceived, this, std::placeholders::_1));
@@ -1193,6 +1119,116 @@ void PCLLocalization::mapReceived(const sensor_msgs::msg::PointCloud2::SharedPtr
 
   map_recieved_ = true;
   RCLCPP_INFO(get_logger(), "mapReceived end");
+}
+
+bool PCLLocalization::loadMapFromPath(const std::string & path)
+{
+  if (shutting_down_) {return false;}
+
+  pcl::PointCloud<pcl::PointXYZI>::Ptr map_cloud_ptr(new pcl::PointCloud<pcl::PointXYZI>);
+  pcl::PCLPointCloud2 raw_map_cloud;
+
+  if (path.rfind(".pcd") != std::string::npos) {
+    RCLCPP_INFO(get_logger(), "Loading pcd map from: %s", path.c_str());
+    if (pcl::io::loadPCDFile(path, raw_map_cloud) == -1) {
+      RCLCPP_ERROR(get_logger(), "Failed to load pcd file: %s", path.c_str());
+      return false;
+    }
+  } else if (path.rfind(".ply") != std::string::npos) {
+    RCLCPP_INFO(get_logger(), "Loading ply map from: %s", path.c_str());
+    if (pcl::io::loadPLYFile(path, raw_map_cloud) == -1) {
+      RCLCPP_ERROR(get_logger(), "Failed to load ply file: %s", path.c_str());
+      return false;
+    }
+  } else {
+    RCLCPP_ERROR(
+      get_logger(), "Unsupported map file format. Please use .pcd or .ply: %s", path.c_str());
+    return false;
+  }
+
+  const bool map_has_intensity = convert_pcl_cloud_to_xyzi(raw_map_cloud, *map_cloud_ptr);
+  if (!map_has_intensity) {
+    RCLCPP_WARN(
+      get_logger(),
+      "Map point cloud does not contain intensity. Falling back to xyz with zero intensity.");
+  }
+
+  RCLCPP_INFO(get_logger(), "Map Size %ld", map_cloud_ptr->size());
+  if (!map_cloud_ptr->empty()) {
+    pcl::getMinMax3D(*map_cloud_ptr, map_min_pt_, map_max_pt_);
+    map_bounds_valid_ = true;
+  } else {
+    map_bounds_valid_ = false;
+  }
+
+  sensor_msgs::msg::PointCloud2::SharedPtr map_msg_ptr(new sensor_msgs::msg::PointCloud2);
+  if (viz_downsample_) {
+    pcl::PCLPointCloud2 map_cloud_viz_filtered;
+    pcl::VoxelGrid<pcl::PCLPointCloud2> voxel_viz;
+    voxel_viz.setInputCloud(std::make_shared<pcl::PCLPointCloud2>(raw_map_cloud));
+    voxel_viz.setLeafSize(viz_voxel_leaf_size_, viz_voxel_leaf_size_, viz_voxel_leaf_size_);
+    voxel_viz.filter(map_cloud_viz_filtered);
+    pcl_conversions::moveFromPCL(map_cloud_viz_filtered, *map_msg_ptr);
+  } else {
+    pcl_conversions::moveFromPCL(raw_map_cloud, *map_msg_ptr);
+  }
+  map_msg_ptr->header.frame_id = global_frame_id_;
+  if (initial_map_pub_) {
+    initial_map_pub_->publish(*map_msg_ptr);
+  }
+  RCLCPP_INFO(get_logger(), "Map Published");
+
+  // Reset crop guards because map bounds have changed.
+  consecutive_crop_failures_ = 0;
+  crop_failure_guard_active_ = false;
+  recent_target_clouds_.clear();
+
+  use_local_map_crop_ = enable_local_map_crop_ || uses_filtered_target(registration_method_);
+  if (use_local_map_crop_) {
+    full_map_cloud_ptr_ = map_cloud_ptr;
+    RCLCPP_INFO(get_logger(), "Local map cropping enabled. Full map: %ld pts, radius: %.0fm",
+                full_map_cloud_ptr_->size(), local_map_radius_);
+    if (supports_ndt_initializer(registration_method_)) {
+      use_ndt_initializer_ = true;
+      ndt_init_scan_count_ = 0;
+      ndt_initializer_.reset(
+        new pclomp::NormalDistributionsTransform<pcl::PointXYZI, pcl::PointXYZI>());
+      ndt_initializer_->setStepSize(ndt_step_size_);
+      ndt_initializer_->setResolution(ndt_resolution_);
+      ndt_initializer_->setTransformationEpsilon(transform_epsilon_);
+      ndt_initializer_->setNumThreads(
+        ndt_num_threads_ > 0 ? ndt_num_threads_ : omp_get_max_threads());
+      ndt_initializer_->setInputTarget(map_cloud_ptr);
+      RCLCPP_INFO(get_logger(), "NDT initializer created (%d scans before GICP switch)",
+                  ndt_init_scans_required_);
+    } else {
+      use_ndt_initializer_ = false;
+      ndt_initializer_.reset();
+    }
+  } else {
+    full_map_cloud_ptr_.reset();
+    if (registration_) {
+      registration_->setInputTarget(map_cloud_ptr);
+      keep_cloud_alive(
+        &recent_target_clouds_, map_cloud_ptr, kRegistrationTargetCloudKeepAliveCount);
+    }
+  }
+
+  map_recieved_ = true;
+  return true;
+}
+
+void PCLLocalization::switchMapCallback(const std_msgs::msg::String::ConstSharedPtr msg)
+{
+  if (shutting_down_) {return;}
+  if (!msg) {return;}
+  RCLCPP_INFO(get_logger(), "switchMapCallback: %s", msg->data.c_str());
+
+  if (loadMapFromPath(msg->data)) {
+    map_path_ = msg->data;
+  } else {
+    RCLCPP_ERROR(get_logger(), "switchMapCallback: failed to load %s", msg->data.c_str());
+  }
 }
 
 void PCLLocalization::odomReceived(const nav_msgs::msg::Odometry::ConstSharedPtr msg)

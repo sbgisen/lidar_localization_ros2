@@ -31,6 +31,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/lifecycle_node.hpp"
 #include "rclcpp_lifecycle/lifecycle_publisher.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist_with_covariance_stamped.hpp"
 #include "sensor_msgs/msg/point_cloud2.hpp"
@@ -86,6 +87,8 @@ public:
   void twistReceived(const geometry_msgs::msg::TwistWithCovarianceStamped::ConstSharedPtr msg);
   void imuReceived(const sensor_msgs::msg::Imu::ConstSharedPtr msg);
   void cloudReceived(const sensor_msgs::msg::PointCloud2::ConstSharedPtr msg);
+  void switchMapCallback(const std_msgs::msg::String::ConstSharedPtr msg);
+  bool loadMapFromPath(const std::string & path);
   // void gnssReceived();
 
   tf2_ros::TransformBroadcaster broadcaster_;
@@ -115,6 +118,8 @@ public:
     cloud_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::ConstSharedPtr
     imu_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::ConstSharedPtr
+    map_switch_sub_;
 
   pcl::Registration<pcl::PointXYZI, pcl::PointXYZI> * registration_{nullptr};
   pcl::Registration<pcl::PointXYZI, pcl::PointXYZI>::Ptr pcl_registration_;
