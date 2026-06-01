@@ -216,6 +216,7 @@ PCLLocalization::PCLLocalization(const rclcpp::NodeOptions & options)
   declare_parameter("odom_frame_id", "odom");
   declare_parameter("base_frame_id", "base_link");
   declare_parameter("enable_map_odom_tf", false);
+  declare_parameter("publish_tf", true);
   declare_parameter("registration_method", "NDT");
   declare_parameter("score_threshold", 2.0);
   declare_parameter("ndt_resolution", 1.0);
@@ -536,6 +537,7 @@ void PCLLocalization::initializeParameters()
   get_parameter("odom_frame_id", odom_frame_id_);
   get_parameter("base_frame_id", base_frame_id_);
   get_parameter("enable_map_odom_tf", enable_map_odom_tf_);
+  get_parameter("publish_tf", publish_tf_);
   get_parameter("registration_method", registration_method_);
   get_parameter("score_threshold", score_threshold_);
   get_parameter("ndt_resolution", ndt_resolution_);
@@ -717,6 +719,7 @@ void PCLLocalization::initializeParameters()
   RCLCPP_INFO(get_logger(),"odom_frame_id: %s", odom_frame_id_.c_str());
   RCLCPP_INFO(get_logger(),"base_frame_id: %s", base_frame_id_.c_str());
   RCLCPP_INFO(get_logger(),"enable_map_odom_tf: %d", enable_map_odom_tf_);
+  RCLCPP_INFO(get_logger(),"publish_tf: %d", publish_tf_);
   RCLCPP_INFO(get_logger(),"registration_method: %s", registration_method_.c_str());
   RCLCPP_INFO(get_logger(),"ndt_resolution: %lf", ndt_resolution_);
   RCLCPP_INFO(get_logger(),"ndt_step_size: %lf", ndt_step_size_);
@@ -2380,32 +2383,34 @@ void PCLLocalization::publishCurrentPose(const builtin_interfaces::msg::Time & s
   map_to_base_link_stamped.transform.translation.y = corrent_pose_with_cov_stamped_ptr_->pose.pose.position.y;
   map_to_base_link_stamped.transform.translation.z = corrent_pose_with_cov_stamped_ptr_->pose.pose.position.z;
   map_to_base_link_stamped.transform.rotation = corrent_pose_with_cov_stamped_ptr_->pose.pose.orientation;
-  if (!enable_map_odom_tf_) {
-    broadcaster_.sendTransform(map_to_base_link_stamped);
-  } else {
-    tf2::Transform map_to_base_link_tf;
-    tf2::fromMsg(map_to_base_link_stamped.transform, map_to_base_link_tf);
+  if (publish_tf_) {
+    if (!enable_map_odom_tf_) {
+      broadcaster_.sendTransform(map_to_base_link_stamped);
+    } else {
+      tf2::Transform map_to_base_link_tf;
+      tf2::fromMsg(map_to_base_link_stamped.transform, map_to_base_link_tf);
 
-    geometry_msgs::msg::TransformStamped odom_to_base_link_msg;
-    try {
-      odom_to_base_link_msg = tfbuffer_.lookupTransform(
-        odom_frame_id_, base_frame_id_, stamp, rclcpp::Duration::from_seconds(0.1));
-    } catch (tf2::TransformException & ex) {
-      RCLCPP_WARN(
-        this->get_logger(), "Could not get transform %s to %s: %s",
-        base_frame_id_.c_str(), odom_frame_id_.c_str(), ex.what());
-      return;
+      geometry_msgs::msg::TransformStamped odom_to_base_link_msg;
+      try {
+        odom_to_base_link_msg = tfbuffer_.lookupTransform(
+          odom_frame_id_, base_frame_id_, stamp, rclcpp::Duration::from_seconds(0.1));
+      } catch (tf2::TransformException & ex) {
+        RCLCPP_WARN(
+          this->get_logger(), "Could not get transform %s to %s: %s",
+          base_frame_id_.c_str(), odom_frame_id_.c_str(), ex.what());
+        return;
+      }
+      tf2::Transform odom_to_base_link_tf;
+      tf2::fromMsg(odom_to_base_link_msg.transform, odom_to_base_link_tf);
+
+      tf2::Transform map_to_odom_tf = map_to_base_link_tf * odom_to_base_link_tf.inverse();
+      geometry_msgs::msg::TransformStamped map_to_odom_stamped;
+      map_to_odom_stamped.header.stamp = stamp;
+      map_to_odom_stamped.header.frame_id = global_frame_id_;
+      map_to_odom_stamped.child_frame_id = odom_frame_id_;
+      map_to_odom_stamped.transform = tf2::toMsg(map_to_odom_tf);
+      broadcaster_.sendTransform(map_to_odom_stamped);
     }
-    tf2::Transform odom_to_base_link_tf;
-    tf2::fromMsg(odom_to_base_link_msg.transform, odom_to_base_link_tf);
-
-    tf2::Transform map_to_odom_tf = map_to_base_link_tf * odom_to_base_link_tf.inverse();
-    geometry_msgs::msg::TransformStamped map_to_odom_stamped;
-    map_to_odom_stamped.header.stamp = stamp;
-    map_to_odom_stamped.header.frame_id = global_frame_id_;
-    map_to_odom_stamped.child_frame_id = odom_frame_id_;
-    map_to_odom_stamped.transform = tf2::toMsg(map_to_odom_tf);
-    broadcaster_.sendTransform(map_to_odom_stamped);
   }
 
   geometry_msgs::msg::PoseStamped pose_stamped;
@@ -2884,32 +2889,34 @@ void PCLLocalization::timerPublishPose()
   map_to_base_link_stamped.transform.translation.z = pose_copy.pose.pose.position.z;
   map_to_base_link_stamped.transform.rotation = pose_copy.pose.pose.orientation;
 
-  if (!enable_map_odom_tf_) {
-    broadcaster_.sendTransform(map_to_base_link_stamped);
-  } else {
-    tf2::Transform map_to_base_link_tf;
-    tf2::fromMsg(map_to_base_link_stamped.transform, map_to_base_link_tf);
+  if (publish_tf_) {
+    if (!enable_map_odom_tf_) {
+      broadcaster_.sendTransform(map_to_base_link_stamped);
+    } else {
+      tf2::Transform map_to_base_link_tf;
+      tf2::fromMsg(map_to_base_link_stamped.transform, map_to_base_link_tf);
 
-    geometry_msgs::msg::TransformStamped odom_to_base_link_msg;
-    try {
-      odom_to_base_link_msg = tfbuffer_.lookupTransform(
-        odom_frame_id_, base_frame_id_, pose_copy.header.stamp, rclcpp::Duration::from_seconds(0.1));
-    } catch (tf2::TransformException & ex) {
-      RCLCPP_WARN(
-        this->get_logger(), "Could not get transform %s to %s: %s",
-        base_frame_id_.c_str(), odom_frame_id_.c_str(), ex.what());
-      return;
+      geometry_msgs::msg::TransformStamped odom_to_base_link_msg;
+      try {
+        odom_to_base_link_msg = tfbuffer_.lookupTransform(
+          odom_frame_id_, base_frame_id_, pose_copy.header.stamp, rclcpp::Duration::from_seconds(0.1));
+      } catch (tf2::TransformException & ex) {
+        RCLCPP_WARN(
+          this->get_logger(), "Could not get transform %s to %s: %s",
+          base_frame_id_.c_str(), odom_frame_id_.c_str(), ex.what());
+        return;
+      }
+      tf2::Transform odom_to_base_link_tf;
+      tf2::fromMsg(odom_to_base_link_msg.transform, odom_to_base_link_tf);
+
+      tf2::Transform map_to_odom_tf = map_to_base_link_tf * odom_to_base_link_tf.inverse();
+      geometry_msgs::msg::TransformStamped map_to_odom_stamped;
+      map_to_odom_stamped.header.stamp = pose_copy.header.stamp;
+      map_to_odom_stamped.header.frame_id = global_frame_id_;
+      map_to_odom_stamped.child_frame_id = odom_frame_id_;
+      map_to_odom_stamped.transform = tf2::toMsg(map_to_odom_tf);
+
+      broadcaster_.sendTransform(map_to_odom_stamped);
     }
-    tf2::Transform odom_to_base_link_tf;
-    tf2::fromMsg(odom_to_base_link_msg.transform, odom_to_base_link_tf);
-
-    tf2::Transform map_to_odom_tf = map_to_base_link_tf * odom_to_base_link_tf.inverse();
-    geometry_msgs::msg::TransformStamped map_to_odom_stamped;
-    map_to_odom_stamped.header.stamp = pose_copy.header.stamp;
-    map_to_odom_stamped.header.frame_id = global_frame_id_;
-    map_to_odom_stamped.child_frame_id = odom_frame_id_;
-    map_to_odom_stamped.transform = tf2::toMsg(map_to_odom_tf);
-    
-    broadcaster_.sendTransform(map_to_odom_stamped);
   }
 }

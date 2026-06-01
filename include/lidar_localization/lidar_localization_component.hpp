@@ -212,6 +212,7 @@ public:
   bool use_gtsam_smoother_{false};
   bool enable_debug_{false};
   bool enable_map_odom_tf_{false};
+  bool publish_tf_{true};
   bool viz_downsample_{false};
   double viz_voxel_leaf_size_{0.5};
   bool predict_pose_from_previous_delta_{true};
