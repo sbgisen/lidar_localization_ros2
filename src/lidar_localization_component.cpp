@@ -1238,6 +1238,7 @@ void PCLLocalization::odomReceived(const nav_msgs::msg::Odometry::ConstSharedPtr
 {
   if (shutting_down_) {return;}
   if (!use_odom_) {return;}
+  if (!corrent_pose_with_cov_stamped_ptr_) {return;}
   RCLCPP_DEBUG(get_logger(), "odomReceived");
 
   double current_odom_received_time = msg->header.stamp.sec +
