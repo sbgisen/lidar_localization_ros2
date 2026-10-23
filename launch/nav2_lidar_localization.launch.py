@@ -1,20 +1,11 @@
 import os
 
-import launch
-import launch.actions
-import launch.events
-import launch_ros
-import launch_ros.actions
-import launch_ros.events
-
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.actions import TimerAction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import LifecycleNode, Node
-
-import lifecycle_msgs.msg
+from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 from ament_index_python.packages import get_package_share_directory
 
@@ -63,6 +54,14 @@ def generate_launch_description():
     imu_tf_roll = LaunchConfiguration('imu_tf_roll', default='0.0')
     imu_tf_pitch = LaunchConfiguration('imu_tf_pitch', default='0.0')
     imu_tf_yaw = LaunchConfiguration('imu_tf_yaw', default='0.0')
+    use_imu_preintegration = LaunchConfiguration(
+        'use_imu_preintegration', default='false')
+    imu_preintegration_use_base_frame_transform = LaunchConfiguration(
+        'imu_preintegration_use_base_frame_transform', default='false')
+    use_continuous_time_deskew = LaunchConfiguration(
+        'use_continuous_time_deskew', default='true')
+    continuous_time_deskew_reference_time_sec = LaunchConfiguration(
+        'continuous_time_deskew_reference_time_sec', default='0.0')
 
     ld.add_action(DeclareLaunchArgument('localization_param_dir', default_value=default_localization_param_dir))
     ld.add_action(DeclareLaunchArgument('global_frame_id', default_value='map'))
@@ -89,6 +88,13 @@ def generate_launch_description():
     ld.add_action(DeclareLaunchArgument('imu_tf_roll', default_value='0.0'))
     ld.add_action(DeclareLaunchArgument('imu_tf_pitch', default_value='0.0'))
     ld.add_action(DeclareLaunchArgument('imu_tf_yaw', default_value='0.0'))
+    ld.add_action(DeclareLaunchArgument('use_imu_preintegration', default_value='false'))
+    ld.add_action(DeclareLaunchArgument('imu_preintegration_use_base_frame_transform', default_value='false'))
+    ld.add_action(DeclareLaunchArgument(
+        'use_continuous_time_deskew', default_value='true',
+        description='Deskew scans when point timing and motion data are ready; '
+                    'otherwise keep the input scan unchanged.'))
+    ld.add_action(DeclareLaunchArgument('continuous_time_deskew_reference_time_sec', default_value='0.0'))
 
     # Static TF: base_link → velodyne (adjust per robot)
     lidar_tf = Node(
@@ -111,18 +117,26 @@ def generate_launch_description():
         condition=IfCondition(publish_imu_tf))
 
     # Localization lifecycle node
-    lidar_localization = LifecycleNode(
+    lidar_localization = Node(
         name='lidar_localization',
         namespace='',
         package='lidar_localization_ros2',
         executable='lidar_localization_node',
         parameters=[localization_param_dir,
                     {
-                        'use_sim_time': use_sim_time,
-                        'enable_map_odom_tf': enable_map_odom_tf,
+                        'use_sim_time': ParameterValue(use_sim_time, value_type=bool),
+                        'enable_map_odom_tf': ParameterValue(enable_map_odom_tf, value_type=bool),
                         'global_frame_id': global_frame_id,
                         'odom_frame_id': odom_frame_id,
                         'base_frame_id': base_frame_id,
+                        'use_imu_preintegration': ParameterValue(
+                            use_imu_preintegration, value_type=bool),
+                        'imu_preintegration_use_base_frame_transform': ParameterValue(
+                            imu_preintegration_use_base_frame_transform, value_type=bool),
+                        'use_continuous_time_deskew': ParameterValue(
+                            use_continuous_time_deskew, value_type=bool),
+                        'continuous_time_deskew_reference_time_sec': ParameterValue(
+                            continuous_time_deskew_reference_time_sec, value_type=float),
                     }],  # Nav2: publish map→odom
         remappings=[
             ('/cloud', cloud_topic),
@@ -132,37 +146,15 @@ def generate_launch_description():
         ],
         output='screen')
 
-    # Auto lifecycle transitions: unconfigured → configure → activate
-    from_inactive_to_active = launch.actions.RegisterEventHandler(
-        launch_ros.event_handlers.OnStateTransition(
-            target_lifecycle_node=lidar_localization,
-            start_state='configuring',
-            goal_state='inactive',
-            entities=[
-                launch.actions.EmitEvent(
-                    event=launch_ros.events.lifecycle.ChangeState(
-                        lifecycle_node_matcher=launch.events.matches_action(lidar_localization),
-                        transition_id=lifecycle_msgs.msg.Transition.TRANSITION_ACTIVATE,
-                    )),
-            ],
-        ))
+    startup = Node(
+        package='lidar_localization_ros2',
+        executable='start_lifecycle_node.py',
+        arguments=['lidar_localization'],
+        output='screen')
 
-    # Defer the configure request slightly so the lifecycle services are ready
-    configure_localization = TimerAction(
-        period=1.0,
-        actions=[
-            launch.actions.EmitEvent(
-                event=launch_ros.events.lifecycle.ChangeState(
-                    lifecycle_node_matcher=launch.events.matches_action(lidar_localization),
-                    transition_id=lifecycle_msgs.msg.Transition.TRANSITION_CONFIGURE,
-                ))
-        ],
-    )
-
-    ld.add_action(from_inactive_to_active)
     ld.add_action(lidar_localization)
     ld.add_action(lidar_tf)
     ld.add_action(imu_tf)
-    ld.add_action(configure_localization)
+    ld.add_action(startup)
 
     return ld

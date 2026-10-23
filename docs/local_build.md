@@ -33,6 +33,11 @@ The script:
 
 Override paths if needed:
 
+The default workspace root is the repository's parent directory. For checkouts
+under `src/` or `worktrees/`, it is their parent instead. An explicit
+`LIDAR_LOCALIZATION_WS_ROOT` takes precedence even before an overlay is built;
+both `install/setup.bash` and the legacy `build_ws/install/setup.bash` are supported.
+
 ```bash
 export LIDAR_LOCALIZATION_WS_ROOT=/path/to/lidarloc_ws
 export LIDAR_LOCALIZATION_LOCAL_PREFIX=/path/to/custom_prefix
@@ -45,7 +50,8 @@ source scripts/setup_local_env.sh
 After sourcing the environment, build from `../build_ws`:
 
 ```bash
-colcon build --symlink-install --packages-up-to lidar_localization_ros2
+colcon build --symlink-install --packages-up-to lidar_localization_ros2 \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
 
 ## Current Local Dependency Set
@@ -59,4 +65,4 @@ The current no-sudo setup in this workspace uses:
 ## Notes
 
 - The `ndt_omp_ros2` checkout in `../build_ws/src/ndt_omp_ros2` is patched locally so the library is exported cleanly and the visualization sample app is disabled by default.
-- After the build finishes, `source scripts/setup_local_env.sh` is enough to make `ros2 run lidar_localization_ros2 ...` and `ros2 run lidar_localization_ros2 benchmark_runner ...` resolve correctly in a new shell.
+- After the build finishes, `source scripts/setup_local_env.sh` is enough to make `ros2 run lidar_localization_ros2 ...` resolve correctly in a new shell.

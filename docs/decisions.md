@@ -28,6 +28,17 @@
 - nearest alternative: `score_budget` at `70.68`
 - generated_from: `scripts/run_imu_guard_experiments.py`
 
+## Multi-Criteria Measurement Acceptance
+
+- adopted variant for this problem: `fixed_threshold`
+- design family: scalar fitness threshold (runtime baseline)
+- rationale: highest combined score (`85.3`) under the shared fixture/evaluation contract
+- benchmark score: `87.5`
+- readability score: `79.0`
+- extensibility score: `85.0`
+- nearest alternative: `bounded_degraded` at `73.82`
+- generated_from: `scripts/run_measurement_acceptance_experiments.py`
+
 ## Recovery Action Selection
 
 - adopted variant for this problem: `guarded_last_pose_retry`
@@ -49,3 +60,10 @@
 - extensibility score: `94.0`
 - nearest alternative: `failure_kind_eager_reinit` at `78.08`
 - generated_from: `scripts/run_reinit_trigger_experiments.py`
+
+## Startup False-Convergence Integrity Monitor
+
+- runtime promotion: `none`
+- leading comparator: `peak_innovation` at `74.82`
+- reason: No candidate passes every repeated closed-loop fixture: correction-budget variants false-trigger on indoor_easy_02_live_r02 and miss indoor_kidnap_01_live_r02, while peak and fitness variants miss kidnaps.
+- generated_from: `scripts/run_startup_integrity_experiments.py`

@@ -1,90 +1,137 @@
 # v1 Status
 
-This document defines what `v1.0.0` means for this repository.
+This document defines what `v1.0.0` means for this repository: what is included, what has been
+validated, and what should not be claimed yet.
 
 ## Included
 
+`v1.0.0` includes:
+
 - ROS 2 LiDAR localization node with lifecycle support
-- Nav2 integration launch files for localization-only and full navigation bringup
-- helper scripts for occupancy-map generation, replay restamping, odom fallback, and goal dispatch
-- rosbag benchmark tooling and trajectory comparison helpers
-- mapless-public dataset scaffolding for split mapping/localization workflows
-- Boreas raw-sequence to rosbag2 conversion for the first public `LiDAR + IMU + GT` starter path
-- a recommended Nav2 preset: `param/nav2_ndt_urban.yaml`
-- a runtime-facing reinitialization-request signal on `/reinitialization_requested`
-- recovery-supervisor diagnostics in `/alignment_status` with explicit state/action fields
-- an optional external supervisor that republishes `/initialpose` when `/reinitialization_requested` goes true
+- localization-only and full Nav2 launch files
+- recommended Nav2 preset: `param/nav2_ndt_urban.yaml`
+- selectable registration backends: `NDT`, `GICP`, `NDT_OMP`, `GICP_OMP`, `SMALL_GICP`, `SMALL_VGICP`
+- pointcloud-map loading from `.pcd` and `.ply`
+- local-map crop for large pointcloud maps
+- odom, twist, and guarded IMU-preintegration prediction paths
+- alignment diagnostics on `/alignment_status`
+- reinitialization request output on `/reinitialization_requested`
+- optional external supervisor that can republish `/initialpose` from the Nav2 wrapper
+- rosbag benchmark, replay smoke, public regression, and release regression helpers
+- artifact-first experimental relocalization tools for dry-run reset command evaluation
+- MID-360 legged robot bringup launch/config/check helpers
 
-## Validated scope
+## Validated Scope
 
-The following paths were validated in this workspace before the `v1.0.0` packaging pass:
+The v1 packaging pass validated these paths in this workspace:
 
-- `colcon build --packages-up-to lidar_localization_ros2 --symlink-install`
+- package build through `colcon build --symlink-install --packages-up-to lidar_localization_ros2`
 - localizer launch and lifecycle activation
 - Nav2 wrapper launch argument resolution
-- demo `navigate_to_pose` smoke using the built-in odom/localization demo path
-- replay `navigate_to_pose` smoke using the real localizer path and helper orchestration
-- shutdown behavior after the destructor-path crash fix
-- public regression suite entry point: `scripts/run_public_regression_suite.sh`
-- reinitialization supervisor regression entry point: `ros2 run lidar_localization_ros2 run_nav2_reinit_supervisor_regression.sh`
-- experiment suite entry point: `ros2 run lidar_localization_ros2 run_experiment_suite.py`
-- mapless-public dataset scaffolding:
-  - `ros2 run lidar_localization_ros2 scaffold_mapless_public_dataset_bundle.py --spec /absolute/path/to/spec.yaml`
-  - generated `run_extract_reference.sh` path for bundles that need GT reference / initial-pose extraction
-- experiment-first comparison entry point: `ros2 run lidar_localization_ros2 run_imu_guard_experiments.py`
+- self-contained Nav2 demo smoke using the built-in odom/localization demo path
+- replay smoke using the real localizer helper path
+- public regression suite entry point
+- reinitialization supervisor regression entry point
+- release regression entry point
+- experiment suite entry point
+- mapless-public dataset scaffolding entry point
+- MID-360 launch/config/build path
 
-## Recommended entry points
+Use [../README.md](../README.md) for the short command list and [benchmarking.md](benchmarking.md)
+for benchmark and regression commands.
 
-- localization only:
-  - `ros2 launch lidar_localization_ros2 nav2_lidar_localization.launch.py`
-- full Nav2 wrapper:
-  - `ros2 launch lidar_localization_ros2 nav2_navigation.launch.py map_yaml:=/absolute/path/to/map.yaml`
-- self-contained smoke:
-  - `ros2 run lidar_localization_ros2 run_nav2_demo_smoke --map-yaml /absolute/path/to/map.yaml --initial-pose-x 0.0 --initial-pose-y 0.0 --goal-x 1.0 --goal-y 0.0`
-- replay smoke:
-  - `ros2 run lidar_localization_ros2 run_nav2_replay_smoke --map-yaml /absolute/path/to/map.yaml --pcd-map-path /absolute/path/to/map.pcd --bag-path /absolute/path/to/bag`
-- reinitialization supervisor regression:
-  - `ros2 run lidar_localization_ros2 run_nav2_reinit_supervisor_regression.sh`
-- public regression:
-  - `scripts/run_public_regression_suite.sh`
-  - Istanbul `60 s` default-on no-IMU safety run
-  - HDL `60 s` IMU safety / throughput compare
-- release regression:
-  - `ros2 run lidar_localization_ros2 run_release_regression_suite.sh`
-  - combines the public suite and the long Nav2 reinitialization-supervisor regression
-- experiment comparison:
-  - `ros2 run lidar_localization_ros2 run_experiment_suite.py`
-  - current problems: IMU correction guard, borderline measurement gate, recovery action selection, reinitialization trigger
-  - generated docs: `docs/interfaces.md`, `docs/experiments.md`, `docs/decisions.md`
-  - problem-specific runners remain available for narrower iteration
-  - `ros2 run lidar_localization_ros2 run_imu_guard_experiments.py`
-  - `ros2 run lidar_localization_ros2 run_borderline_gate_experiments.py`
-  - `ros2 run lidar_localization_ros2 run_recovery_action_experiments.py`
-  - `ros2 run lidar_localization_ros2 run_reinit_trigger_experiments.py`
+## Current Public Snapshot
 
-## Recommended preset
+Latest recorded public validation:
 
-Use `param/nav2_ndt_urban.yaml` unless you are intentionally running one of the experimental presets.
+- date: `2026-05-22`
+- commit: `2a5f11f`
+- release regression: `overall_pass=true`
+- Istanbul `60 s` no-IMU safety check: `1.176 m` translation RMSE, `0.393 deg` rotation RMSE
+- HDL `60 s` IMU safety check, two-repeat median: pose rows `558.5 -> 553.5`
+- Nav2 reinitialization supervisor `150 s`: requested rows `944 -> 7`
 
-Current rationale:
+This is public replay and controlled Nav2 regression validation. It is not a Jetson + MID-360
+hardware result.
 
-- it is the most conservative branch among the tested Nav2-facing presets
-- more aggressive recovery branches improved some intermediate diagnostics but regressed long-horizon translation in later replay tests
-- when enabling the external reinitialization supervisor, keep `reinitialization_supervisor_use_latest_pose:=false`
-  and start with `reinitialization_supervisor_publish_count:=1`
-- `/reinitialization_requested` stays latched after a trigger until a new `/initialpose` clears it
-- the current long replay regression boundary for that policy is `run_nav2_reinit_supervisor_regression.sh`
-- the current one-command release boundary is `run_release_regression_suite.sh`
+See [public_validation_log.md](public_validation_log.md) for the recorded snapshot history.
 
-## Known limits
+## Recommended Preset
 
-- long-horizon urban replay remains the main unresolved robustness gap
-- experimental recovery presets are kept for research, not as defaults
-- occupancy-map generation from PCD is route-crop oriented and is not intended as a universal mapper
-- smoke success does not replace real-robot validation with real odom, real TF, and moving goals
+Use `param/nav2_ndt_urban.yaml` unless you are intentionally running an experiment.
 
-## Non-goals for v1
+Rationale:
 
-- claiming universal recovery from prolonged reject streaks
-- claiming production-grade performance for every dense urban replay segment
-- replacing a full SLAM or mapping stack
+- it is the most conservative tested Nav2-facing preset
+- more aggressive recovery presets improved some intermediate diagnostics but regressed longer replay behavior
+- it keeps `/reinitialization_requested` observable without making automatic reset publication a core runtime claim
+- it is covered by the current release regression path
+
+Experimental presets should stay experimental until they win on public replay and do not regress
+Nav2 smoke or release regression behavior.
+
+## Safe Claims
+
+It is reasonable to say:
+
+- the package provides ROS 2 map-based 3D LiDAR localization with Nav2 launch helpers
+- the recommended preset has public replay and smoke validation within the documented boundary
+- public regression and release regression scripts exist for repeatable checks
+- Istanbul is used as a no-IMU/Nav2 regression guard, not as the main IMU benchmark
+- the project has an artifact-first relocalization evaluation pipeline
+- MID-360 support is a launch/config/build-oriented bringup path
+
+## Known Limits
+
+- Long-horizon robustness on stronger public `LiDAR + IMU + GT` data is not established yet.
+- Istanbul has no IMU stream for IMU-preintegration claims and should not be treated as the main benchmark dataset.
+- Smoke and replay success do not replace real-robot validation with real odom, real TF, measured extrinsics, vibration, and thermal conditions.
+- The current relocalization work is not production-grade global relocalization.
+- The guarded reset publisher is experimental and opt-in.
+- Occupancy-map generation from PCD is route-crop oriented and is not a general mapper.
+- Covariance semantics are not strong enough yet to be a headline downstream-fusion claim.
+
+## Do Not Claim
+
+Do not claim:
+
+- universal recovery from prolonged reject streaks
+- production-grade long-horizon urban operation
+- production-ready global relocalization
+- automatic reset publication in the default public benchmark path
+- `SMALL_GICP` or `SMALL_VGICP` as the default-ready backend without current public comparisons
+- Jetson + MID-360 hardware validation unless real hardware evidence is provided
+
+## v1.1 MVP Endpoint
+
+v1.1 is closed around one public endpoint:
+
+> validated dry-run `/initialpose` command artifact derived from NDT_OMP-scored route-grid candidates,
+> with `published_count=0` in the default benchmark path
+
+Starter manifests:
+
+- `param/benchmark/v1_1_boreas_localizer_only.example.yaml` — health / candidate scaffolding only
+- `param/benchmark/v1_1_boreas_dry_run_endpoint.example.yaml` — full no-publish MVP chain
+
+Smoke check:
+
+```bash
+source scripts/setup_local_env.sh
+scripts/run_v1_1_relocalization_smoke.sh
+```
+
+Outside the v1.1 MVP endpoint:
+
+- guarded publisher (`publish_relocalization_reset_commands.py --execute`)
+- post-reset observation as an accepted-recovery claim
+- automatic runtime recovery
+
+## Next Work
+
+The next technical work should focus on:
+
+- keeping release regression green
+- promoting a stronger public benchmark track based on Boreas or Koide-style data
+- comparing backends on public datasets before changing defaults
+- strengthening diagnostics and covariance semantics

@@ -13,10 +13,10 @@
 mode: run
 
 dataset:
-  bag_path: /absolute/path/to/data/public/koide_hard_localization/sequences/indoor_easy_01/indoor_easy_01
-  map_path: /absolute/path/to/data/public/koide_hard_localization/map_indoor_easy.ply
-  reference_csv: /absolute/path/to/data/public/koide_hard_localization/benchmark/indoor_easy_01/reference.csv
-  initial_pose_yaml: /absolute/path/to/data/public/koide_hard_localization/benchmark/indoor_easy_01/initial_pose.yaml
+  bag_path: repo://data/public/koide_hard_localization/sequences/indoor_easy_01/indoor_easy_01
+  map_path: repo://data/public/koide_hard_localization/map_indoor_easy.ply
+  reference_csv: repo://data/public/koide_hard_localization/benchmark/indoor_easy_01/reference.csv
+  initial_pose_yaml: repo://data/public/koide_hard_localization/benchmark/indoor_easy_01/initial_pose.yaml
   cloud_topic: /points2/decompressed
   imu_topic: /imu
 

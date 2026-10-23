@@ -1,3 +1,6 @@
+# Preset: Nav2 urban rejected-seed update after one rejection.
+# Status: experiment-only derivative retained for comparison.
+
 /**:
   ros__parameters:
     registration_method: NDT_OMP
@@ -31,6 +34,7 @@
     max_twist_prediction_dt: 0.5
     use_imu: false
     use_imu_preintegration: false
+    imu_preintegration_use_base_frame_transform: false
     enable_debug: false
     predict_pose_from_previous_delta: true
     enable_local_map_crop: true
