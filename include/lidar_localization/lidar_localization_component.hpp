@@ -411,6 +411,7 @@ public:
   bool use_gtsam_smoother_{false};
   bool enable_debug_{false};
   bool enable_map_odom_tf_{false};
+  bool publish_tf_{true};
   // AMCL-style odom bridge: the map -> odom offset composed from the last
   // ACCEPTED scan match, frozen and rebroadcast (re-stamped) on every scan
   // callback even while matches are rejected/lost, so map -> base_link stays
@@ -569,6 +570,7 @@ public:
     const Eigen::Matrix4f & init_guess);
   bool setInputTargetForPose(const Eigen::Matrix4f & center_pose_matrix);
   void warmUpRegistrationTarget(const pcl::PointCloud<pcl::PointXYZI>::Ptr & target);
+  void broadcastTransform(const geometry_msgs::msg::TransformStamped & transform);
   lidar_localization::AlignmentAttempt runAlignmentAttempt(
     const Eigen::Matrix4f & attempt_init_guess,
     const Eigen::Matrix4f & crop_center_pose_matrix,
