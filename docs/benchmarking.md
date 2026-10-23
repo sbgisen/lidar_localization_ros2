@@ -1,331 +1,399 @@
 # Benchmarking
 
+> **Current benchmark:** [docs/benchmark.md](benchmark.md) replays public datasets through
+> the quickstart and scores them in the ground-truth frame (`tools/benchmark`).
+
+> **Note:** the offline Python tooling these commands use (benchmark runners, regression
+> suites, dataset fetchers, validators) was removed from the package in 6825f05. The
+> commands are kept as a record of how the published results were produced; check out a
+> commit before 6825f05 to rerun them.
+
+This guide is the command entry point for replay, trajectory evaluation, and public regression checks.
+Use it when you want to compare localization changes under repeatable rosbag playback.
+
 ## Goal
 
-This repository now includes a small benchmark harness so that localization changes can be evaluated under repeatable rosbag playback.
+- replay the same bag with the same launch command
+- record pose, diagnostics, CPU, and memory
+- compare output against a reference trajectory when one exists
+- keep public, private, and experimental benchmark claims clearly separated
 
-## Provided tools
+## Quick Choice
 
-- `benchmark_runner`
-  - Starts a system under test
-  - Records a pose topic into CSV
-  - Replays a rosbag
-  - Samples CPU and memory usage for the target process
-  - Saves logs and a machine-readable `summary.json`
-- `benchmark_pose_recorder`
-  - Records `geometry_msgs/msg/PoseWithCovarianceStamped` into CSV
-- `benchmark_diagnostic_recorder`
-  - Records `diagnostic_msgs/msg/DiagnosticArray` into CSV
-- `benchmark_eval_trajectory`
-  - Compares an estimated trajectory CSV against a reference trajectory CSV
-- `benchmark_eval_evo_ape`
-  - Converts the benchmark CSVs to TUM format and evaluates them with `evo_ape`
-  - Useful when you need a paper-style `ATE` workflow instead of only the built-in RMSE JSON
-- `tum_trajectory_to_pose_reference_csv_for_rosbag2.py`
-  - Crops a TUM trajectory to the time window of a rosbag2 bag and exports benchmark `reference.csv`
-  - Useful for split datasets such as Koide `outdoor_hard_01a` / `01b`, where one GT trajectory spans multiple bag files
-- `build_gt_aligned_map_from_reference_csv.py`
-  - Builds a diagnostic map by transforming PointCloud2 scans with benchmark `reference.csv` poses
-  - Writes float32 binary `.ply` output by default so the runtime stack sees `property float x/y/z`
-  - Useful for proving whether a failure is due to map coverage or to registration itself
-- `benchmark_compare_runs`
-  - Aggregates `summary.json`, `trajectory_eval.json`, and `alignment_status.csv`
-  - Prints a quick human-readable comparison across multiple run directories
-  - Includes reinitialization-request observability from `alignment_status.csv`, such as
-    `reinitialization_requested_rows`, `reinitialization_request_score_max`, and the first trigger reason
-  - Optionally writes a machine-readable comparison JSON
-- `compare_nav2_reinit_supervisor_runs.py`
-  - Aggregates one or more `run_nav2_replay_smoke` log directories
-  - Compares reinitialization-request windows and post-trigger `ok` recovery
-  - Writes a compact JSON/Markdown summary for supervisor-policy comparisons
-- `run_nav2_reinit_supervisor_regression.sh`
-  - Runs a fixed `120 s` Istanbul replay pair: `no_supervisor` vs `configured_initial_pose_count1`
-  - Uses the compare helper and enforces pass/fail checks for the current recommended policy
-- `run_release_regression_suite.sh`
-  - Runs the short public regression suite and the long Nav2 supervisor regression
-  - Writes one combined pass/fail summary for release-style validation
-- `benchmark_make_graph_dataset`
-  - Builds a small synthetic map from graph PCDs
-  - Writes a rosbag2 input with `/velodyne_points` and `/initialpose`
-  - Writes a matching reference trajectory CSV
-  - Writes a dataset-specific parameter YAML for `lidar_localization_ros2`
+| Goal | Command |
+|---|---|
+| Re-check the public validation boundary | `scripts/run_public_regression_suite.sh` |
+| Run the release gate | `ros2 run lidar_localization_ros2 run_release_regression_suite.sh` |
+| Run one dataset from a manifest | `ros2 run lidar_localization_ros2 benchmark_from_manifest --manifest ...` |
+| Evaluate a pose CSV | `ros2 run lidar_localization_ros2 benchmark_eval_trajectory ...` |
+| Compare multiple run directories | `ros2 run lidar_localization_ros2 benchmark_compare_runs ...` |
+| Generate a Nav2 occupancy map from PCD | `ros2 run lidar_localization_ros2 generate_occupancy_map_from_pcd --pcd map.pcd --output-dir maps` |
+
+Start every workflow from the repository root:
+
+```bash
+source scripts/setup_local_env.sh
+```
 
 ## Build
 
 ```bash
-colcon build --packages-select lidar_localization_ros2
-source install/setup.bash
+cd ../build_ws
+colcon build --symlink-install --packages-up-to lidar_localization_ros2 \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release
+cd ../repo
+source scripts/setup_local_env.sh
 ```
+
+See [local_build.md](local_build.md) for the no-sudo local-prefix setup.
 
 ## Map Format Notes
 
-- Runtime manifests accept `.ply` and `.pcd` paths, but current benchmark validation in this repo
-  should prefer `.ply`.
-- For generated maps, use binary little-endian float32 PLY fields (`property float x/y/z`).
+- Runtime map paths accept `.ply` and `.pcd`.
+- Public benchmark/runtime validation should prefer binary little-endian float32 `.ply` maps.
 - Avoid Open3D's default double-precision PLY output for runtime benchmarking.
-- Generated `.pcd` maps are still useful for inspection tools, but they are not the recommended
-  benchmark/runtime path in this repo today.
+- Generated `.pcd` maps are useful for inspection, but are not the preferred benchmark path.
+- Do not use a map built from the same evaluation run for external performance claims.
 
 ## Run a benchmark
 
 ### Run the public regression suite
 
-Use this when you want one command that re-checks the repository's public validation boundary.
+Use this when you want one command that re-checks the current public validation boundary.
 
 ```bash
 source scripts/setup_local_env.sh
 scripts/run_public_regression_suite.sh
 ```
 
-This runs:
+It currently checks:
 
-- Autoware Istanbul `60 s` default-on run to verify that the recommended IMU-capable default does not break a no-IMU dataset
-- HDL `60 s` with `use_imu_preintegration=false/true`, repeated twice by default, to verify IMU safety and throughput
+- Autoware Istanbul `60 s` default-on no-IMU safety
+- HDL `60 s` IMU safety / throughput regression, repeated twice by default
 
 Outputs:
 
-- working runs under `/tmp/lidarloc_public_regression_suite` by default
-- final summary at `artifacts/public/public_regression_suite/summary.json`
-- human-readable snapshot at `artifacts/public/public_regression_suite/summary.md`
+- `artifacts/public/public_regression_suite/summary.json`
+- `artifacts/public/public_regression_suite/summary.md`
 
-Current pass criteria:
+Latest recorded public validation snapshot:
 
-- Istanbul keeps `imu_prediction_active_rows=0`, stays alive during replay, and clears broad `pose_rows` / `matched_sample_count` / RMSE sanity bounds
-- HDL keeps all repeated runs alive during replay, keeps both repeated groups above a broad `pose_rows` floor, requires the IMU-enabled group median to stay under a broad median alignment-time ceiling, uses IMU prediction at least once, and allows at most one automatic IMU disable fallback
+- [public_validation_log.md](public_validation_log.md)
+- `2026-05-22`, commit `2a5f11f`, release regression `overall_pass=true`
+- Istanbul `60 s` no-IMU safety check: `translation_rmse_m=1.176`, `rotation_rmse_deg=0.393`
+- HDL `60 s` IMU safety check: median pose rows `558.5 -> 553.5`
+- Nav2 reinitialization supervisor `150 s`: requested rows `944 -> 7`
 
-Interpretation:
+This is public replay and controlled Nav2 regression validation, not Jetson + MID-360 hardware
+validation.
 
-- Istanbul has no accelerometer stream, so it is only a default-on no-IMU safety check, not an IMU benefit benchmark
-- HDL has no strong public ground truth and single-run pose-row ratios are noisy, so the suite uses broad smoke bounds there rather than a strict acceptance benchmark
+## Dataset Roles
+
+Use the public datasets for different jobs. Do not treat Istanbul as the main benchmark for all
+localization claims.
+
+| Dataset | Role | Do not use it for |
+|---|---|---|
+| Autoware Istanbul | no-IMU urban replay safety, Nav2 replay regression, GNSS-referenced smoke | IMU preintegration claims, production long-horizon robustness claims |
+| HDL sample | IMU pipeline smoke, throughput safety, direct `hdl_localization` sample compatibility | final backend ranking without a fair reference/initialization policy |
+| Boreas | public `LiDAR + IMU + GT` candidate; current localizer-only manifests are diagnostic until prediction/map-split behavior is fixed | quick plug-and-play map-based claims or backend ranking before the workflow is validated |
+| Koide hard localization | next controlled public benchmark candidate; indoor and outdoor `60 s` smoke runs are staged | IMU/preintegration claims before calibration and extrinsics are controlled |
+
+The next strong benchmark track should promote Boreas or Koide-style public data, not deeper
+Istanbul-only tuning.
+
+### Koide smoke manifests
+
+To download the Koide assets and run a short IMU/deskew real-bag smoke in one
+step:
+
+```bash
+source scripts/setup_local_env.sh
+scripts/run_koide_hard_imu_deskew_smoke.sh --download
+```
+
+After the dataset is staged, rerun without `--download`. Use `--mode deskew`
+for a faster deskew-only check, or `--duration 60` for a longer smoke.
+
+To prepare the same public bag for the guarded G2/G3 recovery launch, including
+the route-cropped BBS occupancy map:
+
+```bash
+source scripts/setup_local_env.sh
+scripts/prepare_koide_hard_relocalization_assets.sh --download --mode imu_preintegration
+```
+
+Use `--mode deskew` to generate a continuous-time deskew localization YAML for
+the same recovery launch. The command prints the exact launch and bag replay
+commands; automatic recovery remains an explicit experimental path. The printed
+G2 launch defaults use the compiled backend with a coarser `10 deg` / `256 point`
+BBS query because the default `5 deg` / `512 point` search is too stale on the
+moving Koide bag. The Koide recovery command also re-queries after the top
+candidate (`supervisor_max_walk_candidates:=1`) and enables seed motion
+compensation, matching the latest real-bag recovery experiment.
+
+After staging Koide maps, GT, and sequence bags under `data/public/koide_hard_localization`, use:
+
+```bash
+source scripts/setup_local_env.sh
+ros2 run lidar_localization_ros2 benchmark_from_manifest \
+  --manifest param/benchmark/koide_hard_localization_indoor_easy_01_smoke60.yaml
+ros2 run lidar_localization_ros2 benchmark_from_manifest \
+  --manifest param/benchmark/koide_hard_localization_outdoor_hard_01a_smoke60.yaml
+ros2 run lidar_localization_ros2 benchmark_from_manifest \
+  --manifest param/benchmark/koide_hard_localization_outdoor_hard_01a_120.yaml
+ros2 run lidar_localization_ros2 benchmark_from_manifest \
+  --manifest param/benchmark/koide_hard_localization_outdoor_hard_01a_180_reinit090.yaml
+ros2 run lidar_localization_ros2 benchmark_from_manifest \
+  --manifest param/benchmark/koide_hard_localization_outdoor_hard_01a_180_reinit090_route_proximity_relocalization_artifacts.yaml
+```
+
+Latest local Koide snapshot:
+
+- `2026-06-21`, guarded G2/G3 recovery live check on `outdoor_hard_01a` with
+  lowered reinit trigger (`threshold=0.40`, `gap_scale=10 s`) and C++ BBS:
+  - default BBS (`5 deg`, `512 points`) answered in `24.674 s`; it published
+    four resets, but the first candidate was already `30.09 m` stale at publish
+    time and the request window remained unrecovered.
+  - fast BBS (`10 deg`, `256 points`) answered in `6.176 s` then `4.345 s`;
+    the second query's top reset was much closer (`6.64 m`, `2.0 deg`), but
+    the run still had `0` recovered request windows. This validates the request
+    and guarded publish path, not automatic recovery.
+  - follow-up runs on 2026-06-22 removed three false-positive paths: stale
+    pre-reset fitness can no longer confirm recovery, recovery now needs
+    consecutive post-reset low-fitness samples, and those samples must also be
+    stable-tracking `/alignment_status` diagnostics. `/initialpose` also uses a
+    dedicated callback group, removing the earlier 9-36 s delay between supervisor
+    publish and localizer `initialPoseReceived`.
+  - lowering G2 NMS (`g2_nms_radius_m:=0.5`) keeps near-by/yaw-alternative
+    hypotheses, but walking a stale list remains a bad spend on Koide:
+    `/tmp/lidarloc_koide_recovery_imu_120_nms05_walk4_20260622_124750` still had
+    `recovered=0`; by the 4th walked candidate the reset was tens of metres stale.
+    Re-querying quickly (`supervisor_settle_timeout_sec:=8.0`,
+    `supervisor_max_walk_candidates:=1`) is safer.
+  - latest 120 s checks still report `0` stable recovered request windows. The
+    best safety result is
+    `/tmp/lidarloc_koide_recovery_imu_120_nms05_requery8_stable_20260622_125720`:
+    `ok_rows=101/204`, `reinitialization_requested_rows=31`, `recovered=0`,
+    `max_accepted_gap=15.4 s`, `recovery_confirmed=0`. G2/G3 now publishes
+    guarded resets promptly and avoids false `recovery_confirmed`; robust recovery
+    is still blocked by stale or wrong G2 candidates on the moving outdoor sequence.
+- `2026-06-21`, `outdoor_hard_01a` 120 s IMU/deskew boundary check with the
+  same wrapper (`/tmp/lidarloc_koide_wrapper_allmodes_smoke120_strict`):
+  - `lidar_only`: `translation_rmse_m=0.145`, `rotation_rmse_deg=2.164`,
+    `Last pose s=22.7`
+  - `imu_preintegration`: IMU active / seed source `19.1%`, fallback `0`,
+    `translation_rmse_m=0.087`, `rotation_rmse_deg=0.855`, `Last pose s=21.4`
+  - `deskew`: IMU active / seed source `12.1%`, deskew applied `10.5%`,
+    fallback `0`, `translation_rmse_m=0.161`, `rotation_rmse_deg=1.926`,
+    `Last pose s=32.7`
+  - Treat these RMSE values as short-coverage metrics, not 120 s accuracy. The
+    localizer rejects stale local minima after the first tracking cliff.
+- `2026-06-21`, `outdoor_hard_01a` 60 s IMU/deskew smoke with Koide wrapper
+  open-loop strict gate (`/tmp/lidarloc_koide_wrapper_allmodes_smoke60_strict`):
+  - `lidar_only`: `translation_rmse_m=0.163`, `rotation_rmse_deg=2.137`
+  - `imu_preintegration`: IMU active / seed source `34.4%`, fallback `0`,
+    `translation_rmse_m=0.082`, `rotation_rmse_deg=0.810`
+  - `deskew`: IMU active / seed source `35.4%`, deskew applied `31.2%`,
+    fallback `0`, `translation_rmse_m=0.081`, `rotation_rmse_deg=0.771`
+  - open-loop strict gate rejected stale local minima; max matched translation
+    error was `0.156 m` for both IMU and deskew pose traces.
+- `2026-06-21`, `outdoor_hard_01a` 20 s IMU/deskew smoke with the same wrapper:
+  - `lidar_only`: `translation_rmse_m=0.0796`, `rotation_rmse_deg=0.722`
+  - `imu_preintegration`: IMU active / seed source `91.7%`, fallback `0`,
+    `translation_rmse_m=0.085`, `rotation_rmse_deg=0.613`
+  - `deskew`: IMU active / seed source `88.9%`, deskew applied `86.1%`,
+    fallback `0`, `translation_rmse_m=0.083`, `rotation_rmse_deg=0.541`
+- `2026-06-10`, `outdoor_hard_01a_smoke60` + `recovery_retry r3_gap1_seed15`: `translation_rmse_m=0.228`, `rotation_rmse_deg=2.696`, `ok_rows=244/246`
+- `2026-06-10`, `outdoor_hard_01a_120` + `recovery_retry r3_gap1_seed15` (tuning run): `translation_rmse_m=0.192`, `rotation_rmse_deg=1.923`, `ok_rows=441/461`
+- `2026-06-10`, `outdoor_hard_01a_120` + `recovery_retry r3_gap1_seed15` (reconfirm run): `translation_rmse_m=0.315`, `ok_rows=221/447` — `fitness_exploded` outlier ~`104 s`
+- `2026-06-10`, `outdoor_hard_01a_180` (baseline): `translation_rmse_m=0.210`, `ok_rows=71/523` — pose output stops ~`126 s`
+- `2026-06-10`, `outdoor_hard_01a_180` + `recovery_retry r3_gap1_seed15` (tuning run): `translation_rmse_m=0.255`, `rotation_rmse_deg=2.273`, `ok_rows=473/474`
+- `2026-06-10`, `outdoor_hard_01a_180` + `recovery_retry r3_gap1_seed15` (reconfirm run): `translation_rmse_m=1.549`, `rotation_rmse_deg=4.373`, `ok_rows=486/753` — acceptance holds, late-run drift outlier
+- `2026-06-10`, `outdoor_hard_01 window_15_120` recovery compare:
+  - baseline: `translation_rmse_m=5.477`, `matched=138`
+  - `recovery_retry r3_gap1_seed15`: `translation_rmse_m=0.266`, `matched=443`
+- `2026-05-24`, `indoor_easy_01_smoke60`: `translation_rmse_m=0.079`, `rotation_rmse_deg=1.639`, `ok_rows=773/773`
+- `2026-05-24`, `outdoor_hard_01a_smoke60`: `translation_rmse_m=0.209`, `rotation_rmse_deg=2.241`, `ok_rows=223/225`
+- `2026-05-25`, `outdoor_hard_01a_120`: `translation_rmse_m=0.224`, `rotation_rmse_deg=2.083`, `ok_rows=482/499`
+- `2026-05-25`, `outdoor_hard_01a_180`: `translation_rmse_m=1.197`, `rotation_rmse_deg=10.337`, `ok_rows=466/679`
+- `2026-05-25`, `outdoor_hard_01a_180_reinit090`: `reinitialization_requested_rows=264`, `recovered_request_windows=0`
+
+The bags contain IMU topics, but the current smoke configs keep IMU preintegration disabled where
+the dataset calibration path is not controlled.
+
+The current outdoor boundary is between 120 s and 180 s. In the `180 s` run, pose output stopped
+after about `126.2 s`; the first fitness score above `100` appeared at stamp `1694532947.800806284`,
+and the run ended with `179` consecutive rejected updates. Treat this as the next recovery and
+relocalization target, not as a passing benchmark.
+
+Lowering `reinitialization_trigger_threshold` to `0.90` raises `/reinitialization_requested`, but it
+does not recover by itself. The first request appeared at stamp `1694532923.600409269` with reason
+`fitness_exploded_reinit_requested`; the request window remained unrecovered. The existing
+`enable_rejected_seed_update` diagnostic also does not clear the `180 s` boundary: it still stops
+pose output at about `126.2 s` and ends near `translation_rmse_m=1.100`,
+`rotation_rmse_deg=10.368`.
+
+The `180_reinit090` request window is not empty. A route-grid diagnostic on `2026-05-25` generated
+one attempt and `90` candidates. Reference-oracle scoring found candidate `49` at `0.000 m`
+translation error. `candidate_index` ordering over the same top-32 scored rows selected candidate
+`6` first, with oracle score `26.293 m`, so plain candidate order is unsafe as a reset source.
+`route_proximity` ordering fixes this artifact failure without using `oracle_rank`: it sorts by
+request-time proximity and route-center offsets, selected candidate `49` first, scored it with
+NDT_OMP score `0.984596`, and produced a validated dry-run `/initialpose` command with
+`published_count=0`. This is still not an automatic runtime recovery claim because reset
+publication remains disabled and the route-grid corridor is an offline evaluation artifact.
+
+### Run a manifest with health summary
+
+Use `benchmark_from_manifest` for repeatable single-run or sweep benchmarks. It resolves paths,
+writes a generated localization YAML into the output directory, copies the manifest for
+reproducibility, records diagnostics, and evaluates the trajectory when `reference_csv` is present.
+
+```bash
+source scripts/setup_local_env.sh
+ros2 run lidar_localization_ros2 benchmark_from_manifest \
+  --manifest /absolute/path/to/run_manifest.yaml
+```
+
+Useful manifest templates:
+
+- `param/benchmark/private_dataset_run_manifest.example.yaml`
+- `param/benchmark/private_dataset_sweep_manifest.example.yaml`
+- `param/benchmark/koide_hard_localization_run_manifest.example.yaml`
+- `param/benchmark/v1_1_boreas_localizer_only.example.yaml`
+- `param/benchmark/v1_1_koide_outdoor01_public_map_failure_boundary.example.yaml`
+
+Common path prefixes:
+
+- `repo://...`: resolve from this repository root
+- `manifest://...`: resolve from the manifest directory
+- normal relative paths: resolve from the manifest directory
+
+Health summary is enabled by default for single-run manifests and writes:
+
+- `health_summary.json`
+- `health_summary.md`
+
+Disable it only when the run intentionally has no `/alignment_status` recording:
+
+```yaml
+benchmark:
+  write_health_summary: false
+```
 
 ### Fetch a real benchmark dataset from hdl_localization
 
-Use the helper script when you want a reproducible real LiDAR bag instead of the graph-derived synthetic smoke test.
+Use this for a reproducible public LiDAR bag from `hdl_localization`.
 
 ```bash
 source scripts/setup_local_env.sh
 scripts/fetch_official_hdl_localization_sample.sh
 ```
 
-The script downloads the official `hdl_localization` example assets and prepares:
+Prepared assets:
 
 - `data/official/hdl_localization/hdl_400.bag`
 - `data/official/hdl_localization/map.pcd`
 - `data/official/hdl_localization/hdl_400_ros2`
 
-Upstream sources:
+Use this official sample for externally shared `hdl_localization`-style results. Cite the upstream
+repository and dataset URL instead of presenting local field logs as open benchmark data.
 
-- `https://github.com/koide3/hdl_localization`
-- `https://www.aisl.cs.tut.ac.jp/databases/hdl_graph_slam/hdl_400.bag.tar.gz`
-- `https://raw.githubusercontent.com/koide3/hdl_localization/master/data/map.pcd`
+### Fetch the Autoware Istanbul no-IMU regression dataset
 
-The generated `rosbag2` dataset keeps only standard ROS message types:
-
-- `/velodyne_points`
-- `/gpsimu_driver/imu_data`
-- `/gpsimu_driver/gpstime`
-
-Important caveat:
-
-- `hdl_localization`'s original demo expects a relocalization step
-- `lidar_localization_ros2` does not have equivalent automatic global relocalization yet
-- use this dataset once you have either a good initial pose or an explicit relocalization experiment plan
-
-Publication rule:
-
-- use this official `hdl_400` sample for any benchmark result that will be published or shared outside the local workspace
-- do not present local field-recorded bags or graph-derived synthetic bags as open benchmark data
-- cite the upstream `hdl_localization` repository and dataset URL in any published report
-- prefer linking to the upstream bag download instead of rehosting the raw bag, unless dataset redistribution terms are clarified separately
-
-### Fetch a stronger public map-based localization dataset from Autoware
-
-Use the official Autoware Istanbul localization assets when you want a harder public benchmark with a
-pointcloud map and a localization-only ROS 2 bag.
+Use the official Autoware Istanbul localization assets for no-IMU urban replay and Nav2 regression.
+It is useful, but it should not be the main dataset for IMU or long-horizon robustness claims.
 
 ```bash
 source scripts/setup_local_env.sh
 scripts/fetch_official_autoware_istanbul_dataset.sh
 ```
 
-The script prepares:
+Prepared assets:
 
 - `data/official/autoware_istanbul/pointcloud_map.pcd`
 - `data/official/autoware_istanbul/localization_rosbag`
 
-The official localization-only bag contains:
+Recommended topics:
 
-- `/localization/util/downsample/pointcloud`
-- `/sensing/gnss/pose`
-- `/sensing/gnss/pose_with_covariance`
-- `/localization/twist_estimator/twist_with_covariance`
-- `/clock`
-- `/tf_static`
+- cloud: `/localization/util/downsample/pointcloud`
+- reference pose: `/sensing/gnss/pose_with_covariance`
+- twist: `/localization/twist_estimator/twist_with_covariance`
 
-Recommended use:
-
-- use `/localization/util/downsample/pointcloud` as the input cloud topic
-- use `/sensing/gnss/pose_with_covariance` as the reference trajectory source
-- keep `hdl_400` as the direct `hdl_localization` baseline, and use Istanbul as the harder public benchmark
-
-Official sources:
-
-- `https://github.com/autowarefoundation/autoware-documentation/blob/main/docs/datasets/index.md`
-- `https://github.com/autowarefoundation/autoware-documentation/blob/main/docs/simulation-evaluation/components_evaluation/localization_evaluation/urban-environment-evaluation.md`
-- `https://github.com/orgs/autowarefoundation/discussions/5135`
-
-Example benchmark command:
+Extract a reference CSV and initial-pose YAML directly from the bag:
 
 ```bash
 ros2 run lidar_localization_ros2 benchmark_extract_pose_reference_from_rosbag2 \
   --bag-path data/official/autoware_istanbul/localization_rosbag \
   --pose-topic /sensing/gnss/pose_with_covariance \
   --sample-topic /localization/util/downsample/pointcloud \
-  --bag-duration 30 \
+  --bag-duration 60 \
   --initial-pose-skip-sec 0.05 \
-  --output-csv /tmp/autoware_istanbul_reference_30s.csv \
-  --output-initial-pose-yaml /tmp/autoware_istanbul_initial_pose_30s.yaml
+  --output-csv /tmp/autoware_istanbul_reference_60s.csv \
+  --output-initial-pose-yaml /tmp/autoware_istanbul_initial_pose_60s.yaml
 ```
 
-Use a unique ROS domain when replaying the bag to avoid unrelated ROS 2 traffic leaking into the benchmark:
+Use a unique `ROS_DOMAIN_ID` for replay so unrelated ROS 2 traffic cannot leak into the benchmark.
 
-```bash
-ros2 run lidar_localization_ros2 benchmark_runner \
-  --bag-path data/official/autoware_istanbul/localization_rosbag \
-  --output-dir /tmp/lidarloc_istanbul_ndt_30s \
-  --ros-domain-id 92 \
-  --bag-duration 30 \
-  --system-command "ros2 launch lidar_localization_ros2 lidar_localization.launch.py localization_param_dir:=/tmp/autoware_istanbul_localization.yaml cloud_topic:=/localization/util/downsample/pointcloud" \
-  --target-process-pattern lidar_localization_node \
-  --record-topic /pcl_pose \
-  --diagnostic-topic /alignment_status
-```
+#### Istanbul 60 s: run variance and regression guard
 
-The temporary `localization_param_dir` should contain:
+The public demo and regression suite use the **same** seed/map parameters:
 
-- the Istanbul `map_path`
-- a fair initial pose, typically taken from `--output-initial-pose-yaml`
-- for Istanbul specifically, skip the very first GNSS sample because its yaw can be unstable at replay start
-- any dataset-specific tuning, such as a relaxed `score_threshold`
+- template: `param/public_istanbul_60s_benchmark.yaml`
+- initial pose + reference CSV: extracted from the bag (`initial-pose-skip-sec 0.05`)
+- map: `data/official/autoware_istanbul/pointcloud_map.pcd`
 
-Clean Istanbul 30-second snapshot:
+Recent local reruns on 2026-06-10 (current `main`, Sprint 1 reliability patches):
 
-- reference extraction: direct bag read with `benchmark_extract_pose_reference_from_rosbag2`
-- stable-init threshold sweep summary CSV: `/tmp/lidarloc_istanbul_stable_threshold_sweep/summary.csv`
-- twist-linear sweep summary CSV: `/tmp/lidarloc_istanbul_twist_linear_threshold_sweep/summary.csv`
-- best current run directory: `/tmp/lidarloc_istanbul_twist_linear_threshold_sweep/twist_linear_thr6`
-- report: `artifacts/public/autoware_istanbul_ndt_30s/index.html`
-- matched samples: `109 / 238`
-- translation RMSE vs GNSS reference: `1.163 m`
-- rotation RMSE vs GNSS reference: `0.383 deg`
+| Run | translation RMSE | rotation RMSE | matched | notes |
+| --- | --- | --- | --- | --- |
+| Public demo (fresh rerun) | `1.21 m` | `0.40 deg` | 61 | no `--resume`; end error ~`4.6 m` |
+| Public demo (outlier) | `4.74 m` | `0.44 deg` | 92 | late-run drift cascade to ~`24 m` |
+| Public regression suite | `1.15 m` | `0.39 deg` | 107 | safety gate still passes (`<= 6.0 m`) |
+
+The `4.74 m` outlier was **not** caused by seed/map parameter drift. Diff of
+`autoware_istanbul_initial_pose_60s.yaml` and `public_istanbul_60s_benchmark.yaml`
+between the outlier and fresh rerun showed identical values. Error started near
+`0.02 m` and grew only in the second half of the window — classic long-horizon
+drift, not map-frame misalignment. See [map_alignment.md](map_alignment.md).
 
 Interpretation:
 
-- the Istanbul benchmark wiring is now stable enough for public reporting
-- the first exported GNSS sample can produce a bad initial yaw on this dataset
-- skipping that unstable sample and then tightening `score_threshold` to `5-10` improves the result dramatically
-- adding linear-only twist prediction improves the current `NDT_OMP` public 30-second result further
-- remaining work is in localization quality, not in reference extraction or ROS graph hygiene
+- Istanbul public replay is **stochastic** under the current acceptance policy;
+  compare trends across multiple runs, not a single number
+- for release checks, prefer `scripts/run_public_regression_suite.sh` gates over
+  one demo invocation
+- after code changes, rerun without `--resume` so `benchmark_runner` outputs are
+  regenerated
+- if RMSE spikes while early samples stay tight, inspect `/alignment_status`
+  reject streaks and `seed_translation_since_accept_m` before changing map/seed
 
-Quick sweep command:
+#### Istanbul 60 s drift tuning (2026-06-10)
 
-```bash
-python3 scripts/benchmark_sweep_localizer \
-  --bag-path data/official/autoware_istanbul/localization_rosbag \
-  --reference-csv /tmp/lidarloc_istanbul_ref_direct_30s.csv \
-  --base-param-yaml /tmp/lidarloc_istanbul_ndt_30s_direct.yaml \
-  --config-json param/benchmark/autoware_istanbul_ndt_quick_sweep.json \
-  --output-dir /tmp/lidarloc_istanbul_ndt_quick_sweep \
-  --map-path data/official/autoware_istanbul/pointcloud_map.pcd \
-  --cloud-topic /localization/util/downsample/pointcloud \
-  --bag-duration 30 \
-  --settle-seconds 5 \
-  --post-roll-seconds 1
-```
+Public benchmark preset (`param/public_istanbul_60s_benchmark.yaml`) now enables
+`local_map_crop` and conservative `recovery_retry_from_last_pose` (`r3`, `gap<=1 s`,
+`seed<=15 m`) on top of the existing `thr6 + borderline_seed_gate` policy.
 
-Stable-init threshold sweep command:
+Single-run and repeat compare (`param/benchmark/autoware_istanbul_ndt_60s_drift_tuning_*.json`):
 
-```bash
-python3 scripts/benchmark_sweep_localizer \
-  --bag-path data/official/autoware_istanbul/localization_rosbag \
-  --reference-csv /tmp/lidarloc_istanbul_ref_direct_30s.csv \
-  --base-param-yaml /tmp/lidarloc_istanbul_ndt_30s_stable_base.yaml \
-  --config-json /tmp/lidarloc_istanbul_stable_threshold_sweep.json \
-  --output-dir /tmp/lidarloc_istanbul_stable_threshold_sweep \
-  --map-path data/official/autoware_istanbul/pointcloud_map.pcd \
-  --cloud-topic /localization/util/downsample/pointcloud \
-  --bag-duration 30 \
-  --settle-seconds 5 \
-  --post-roll-seconds 1
-```
+| Preset | translation RMSE (3 runs) | rotation RMSE | matched (typical) |
+| --- | --- | --- | --- |
+| public baseline | `1.66 / 3.20 / 1.27 m` (median `1.66 m`) | `0.2–0.7 deg` | `54–99` |
+| recovery `r3_gap1_seed15` | `1.17 / 0.97 / 2.59 m` (median `1.17 m`) | `2.4–3.7 deg` | `103–180` |
 
-Twist-linear threshold sweep command:
+Interpretation:
 
-```bash
-python3 scripts/benchmark_sweep_localizer \
-  --bag-path data/official/autoware_istanbul/localization_rosbag \
-  --reference-csv /tmp/lidarloc_autoware_istanbul_reference_30s_stable.csv \
-  --base-param-yaml /tmp/lidarloc_istanbul_ndt_30s_stable_base.yaml \
-  --config-json param/benchmark/autoware_istanbul_ndt_twist_linear_sweep.json \
-  --output-dir /tmp/lidarloc_istanbul_twist_linear_threshold_sweep \
-  --cloud-topic /localization/util/downsample/pointcloud \
-  --twist-topic /localization/twist_estimator/twist_with_covariance \
-  --bag-duration 30 \
-  --settle-seconds 5 \
-  --post-roll-seconds 1
-```
-
-Twist-linear sweep snapshot:
-
-- `thr5`: translation `1.740 m`, rotation `0.115 deg`, matched `105`
-- `thr6`: translation `1.163 m`, rotation `0.383 deg`, matched `109`
-- `thr7`: translation `1.970 m`, rotation `0.238 deg`, matched `108`
-- `thr8`: translation `1.378 m`, rotation `0.586 deg`, matched `110`
-- `thr10`: translation `2.895 m`, rotation `0.704 deg`, matched `116`
-
-At the moment `twist_linear_thr6` is the best balanced public setting on the first `30 s`.
-
-Istanbul `60 s` predictor comparison:
-
-```bash
-source scripts/setup_local_env.sh
-scripts/run_autoware_istanbul_60s_predictor_compare.sh
-```
-
-This produces:
-
-- a stable-init `60 s` reference CSV and initial pose YAML
-- two run directories under `/tmp/lidarloc_autoware_istanbul_60s_predictor_compare/runs`
-- a comparison JSON under `artifacts/public/istanbul_60s_predictor_compare/comparison.json`
-- one drift-correlation HTML and JSON pair for each run
+- recovery retry reduces median translation RMSE and raises matched sample count
+- a parallel outlier baseline run (`3.20 m`, `54` matched) became `0.97 m`, `124` matched
+  with recovery enabled on the same seed/reference window
+- rotation RMSE rises slightly but stays well inside the public regression gate (`<= 20 deg`)
+- `score_threshold: 5.25` alone did not beat baseline on this template; avoid stacking
+  with recovery until revalidated
 
 ### Run a private or NC dataset without committing raw paths
 
-When the real acceptance bag cannot be published, keep the raw bag, map, and ground-truth files
-outside the repository and drive the benchmark through a manifest file instead.
-
-Single-run template:
-
-- `param/benchmark/private_dataset_run_manifest.example.yaml`
-
-Sweep template:
-
-- `param/benchmark/private_dataset_sweep_manifest.example.yaml`
-
-The manifest keeps:
-
-- dataset paths such as `bag_path`, `map_path`, and optional `reference_csv`
-- topic names such as `cloud_topic`, `twist_topic`, and `imu_topic`
-- the base parameter YAML plus any dataset-specific parameter overrides
-- benchmark timing and ROS domain settings
-
-Path rules:
-
-- normal relative paths are resolved relative to the manifest file
-- `repo://...` resolves relative to this repository root
-- `manifest://...` explicitly resolves relative to the manifest file
-
-Run one benchmark:
+Keep private bag, map, and ground-truth paths outside the repository. Drive the run through a manifest:
 
 ```bash
 source scripts/setup_local_env.sh
@@ -333,35 +401,16 @@ ros2 run lidar_localization_ros2 benchmark_from_manifest \
   --manifest /absolute/path/to/private_dataset_run_manifest.yaml
 ```
 
-Run a sweep:
+Rules:
 
-```bash
-source scripts/setup_local_env.sh
-ros2 run lidar_localization_ros2 benchmark_from_manifest \
-  --manifest /absolute/path/to/private_dataset_sweep_manifest.yaml
-```
-
-What the wrapper does:
-
-- resolves all relative paths relative to the manifest file itself
-- writes a generated localization YAML into the benchmark output directory
-- copies the manifest into the output directory for reproducibility
-- runs `benchmark_runner` or `benchmark_sweep_localizer`
-- runs `benchmark_eval_trajectory` automatically when `reference_csv` is present in single-run mode
-
-Operational rule:
-
-- keep the real manifest outside the repository or under a user-specific ignored path
-- if you keep it inside the repo, prefer `param/benchmark/*.local.yaml` or `param/benchmark/private/`
 - commit only example manifests and public benchmark configs
-- do not publish NC dataset results as if they were open benchmark artifacts
+- keep real manifests outside the repo or under ignored names such as `*.local.yaml`
+- do not publish NC/private results as open benchmark artifacts
 
 ### Run a public LiDAR+IMU dataset that has no packaged map
 
-When the public dataset includes LiDAR, IMU, and GT but no packaged pointcloud map, keep mapping and
+When a public dataset has LiDAR, IMU, and GT but no packaged pointcloud map, keep mapping and
 localization as separate runs.
-
-Use the scaffold helper:
 
 ```bash
 source scripts/setup_local_env.sh
@@ -372,31 +421,67 @@ ros2 run lidar_localization_ros2 scaffold_mapless_public_dataset_bundle.py \
 Start from:
 
 - `param/benchmark/mapless_public_dataset_bundle.example.yaml`
-- `param/benchmark/boreas_mapless_public_dataset_bundle.example.yaml` for the Boreas starter path
+- `param/benchmark/boreas_mapless_public_dataset_bundle.example.yaml`
 
-The generated bundle contains:
+The generated bundle contains mapping, reference extraction, localization benchmark, and Nav2 map
+generation scripts. See [mapless_public_dataset_workflow.md](mapless_public_dataset_workflow.md).
 
-- `run_mapping.sh`
-- `run_extract_reference.sh` when the spec includes `reference:`
-- `localization_run_manifest.yaml`
-- `run_localization_benchmark.sh`
-- `run_generate_nav2_map.sh`
-- `README.md`
+### Boreas baseline snapshot
 
-Design rule:
+Latest local Boreas snapshot (`boreas-2021-09-02-11-42` vs GT-aligned map from `boreas-2020-11-26-13-58`):
 
-- use one run to create the map
-- use a different run to evaluate localization against that map
+- `2026-06-10`, `120 s` wall-clock baseline: `translation_rmse_m=43.515`, `rotation_rmse_deg=8.581`, `ok_rows=37/961`, matched `37`
+- `2026-06-10`, `120 s` `use_sim_time:=true`: `translation_rmse_m=42.567`, `rotation_rmse_deg=8.478`, matched `39` — no material fix
+- `2026-06-10`, crop sweep (`boreas_localization_120s_crop_compare.json`):
+  - `baseline_crop150`: matched `38`, `translation_rmse_m=40.325`
+  - `no_crop`: matched `31`, `translation_rmse_m=32.324`
+  - `crop_radius300`: matched `25`, `translation_rmse_m=39.469`
+  - `no_crop_recovery_r3_gap1_seed15`: matched `144`, `translation_rmse_m=110.709` — throughput up, false recovery / map misalignment
+- dominant failure modes on baseline: `fitness_score_over_threshold_rejected`, `local_map_crop_too_small`, `accepted_gap_reinit_requested` from ~`43 s`
 
-If the dataset carries GT in the localization bag, prefer using the bundle `reference:` section.
-That adds a bundle-local reference CSV and initial-pose YAML extraction step before the benchmark.
+Interpretation:
 
-This lets you use an external mapper such as `lidarslam_ros2` without baking mapper-specific logic into
-`benchmark_from_manifest`.
+- crop tuning alone does not make Boreas benchmarkable; disabling crop or widening radius does not restore stable tracking
+- `recovery_retry` can raise pose throughput, but on this map/sequence pair it mostly accepts bad alignments
+- the next blocker is likely **map split / GT alignment** between mapping and localization sequences, not another crop radius sweep
+
+`2026-06-10` cliff / throughput tuning notes:
+
+- GT map rebuild with `build_gt_aligned_map_from_reference_csv.py` matches the existing map (`~2.68M` points); benchmark RMSE unchanged
+- first `~12 s` tracks well (`early12 median ~0.04–0.17 m`), then fitness rises above `score_threshold=6.0` and reject streaks begin
+- `use_twist_prediction: false` raises pose throughput but leaves the pose near the initial pose
+- aggressive `recovery_retry` + disabled borderline gate raises matched count but destroys RMSE (`60 s` matched `158`, RMSE `67 m`)
+- conservative improvements so far:
+  - `local_map_radius: 300` (`60 s` matched `24`, RMSE `39.5 m`, late median `87 m` vs urban `107 m`)
+  - `max_twist_prediction_dt: 0.2` with borderline gate kept (`60 s` matched `42`, early12 median `0.13 m`, late drift remains)
+- new preset: `param/boreas_ndt_velodyne.yaml`
+  - `local_map_radius=300`, `max_twist_prediction_dt=0.2`, borderline gate kept, no `recovery_retry`
+  - throughput tuning: `voxel_leaf_size=1.5`, `ndt_num_threads=8`, `ndt_max_iterations=25`, `cloud_queue_depth=1`
+- throughput sweep (`60 s`):
+  - `vox15_threads8_iter25`: matched `44`, align median `0.018 s` (vs preset `0.051 s`), RMSE `47.9 m`
+  - `fast_path_velodyne` (`base_frame_id=velodyne`, no voxel filter): matched `33`, align median `0.088 s` — not faster here
+- `120 s` updated preset: matched `45` (urban baseline was `~37`), translation RMSE `47.4 m` — still diagnostic only
+- `60 s` seed-management sweep (`boreas_localization_60s_seed_compare.json`):
+  - `preset_baseline`: matched `41`, RMSE `47.6 m`, `reinitialization_requested_rows=56`
+  - `max_dt01` (`max_twist_prediction_dt=0.1`): matched `50`, RMSE `47.7 m`, no reinit requests
+  - `post_reject_r5_thr55`: matched `42`, RMSE `47.1 m`
+  - `rejected_seed_r3_fit6_t2_yaw5`: matched `39`, RMSE `48.2 m`
+  - `recovery_r3_gap1_seed10`: matched `41`, RMSE `49.4 m` — conservative recovery still hurts RMSE
+  - `post_reject_r5_plus_rejected_seed` (winner): matched `49`, RMSE `45.7 m`, fitness median `18.0`, seed drift median `26.6 m`, no reinit requests
+  - `delta_only_no_twist`: matched `158`, RMSE `106.6 m` — confirms twist prediction must stay enabled
+- updated `param/boreas_ndt_velodyne.yaml` with winner combo:
+  - `max_twist_prediction_dt=0.1`
+  - `enable_post_reject_strict_score_threshold=true`, `post_reject_strict_min_rejections=5`, `post_reject_strict_score_threshold=5.5`
+  - `enable_rejected_seed_update=true`, `rejected_seed_update_min_rejections=3`, `rejected_seed_update_max_fitness=6.0`
+- `120 s` seed-management preset confirm: matched `52` (was `45`), translation RMSE `47.8 m`, `ok_rows=52/647` — throughput up, cliff still ~`12 s`
+
+Next engineering targets:
+2. keep borderline / score gates, but improve behavior after the `~12 s` fitness cliff without accepting bad recoveries
+3. stage IMU/twist prediction only after localizer-only acceptance is stable
 
 ### Boreas starter
 
-For a first public `LiDAR + IMU + GT` dataset with this workflow, start from Boreas:
+Convert a Boreas raw sequence to rosbag2, then scaffold the split mapping/localization bundle.
 
 ```bash
 source scripts/setup_local_env.sh
@@ -406,17 +491,14 @@ ros2 run lidar_localization_ros2 convert_boreas_sequence_to_rosbag2.py \
   --force
 ```
 
-Then scaffold the split mapping/localization bundle from:
+Then use:
 
 - `param/benchmark/boreas_mapless_public_dataset_bundle.example.yaml`
-
-Reference:
-
-- [docs/boreas_mapless_public_dataset_workflow.md](boreas_mapless_public_dataset_workflow.md)
+- [boreas_mapless_public_dataset_workflow.md](boreas_mapless_public_dataset_workflow.md)
 
 ### Generate a first synthetic dataset from graph PCDs
 
-This is the fastest way to produce a first result when no rosbag2 file is available locally.
+Use this only for smoke/debug when no real rosbag2 dataset is available locally.
 
 ```bash
 source scripts/setup_local_env.sh
@@ -434,69 +516,56 @@ ros2 run lidar_localization_ros2 benchmark_make_graph_dataset \
   --force
 ```
 
-The generated parameter file expects the standard launch file and the generated bag includes:
-
-- `/velodyne_points`
-- `/initialpose`
+Do not use graph-derived synthetic results as public open-data claims.
 
 ### Benchmark this package
+
+Use `benchmark_runner` directly when you already have a bag and launch command.
 
 ```bash
 ros2 run lidar_localization_ros2 benchmark_runner \
   --bag-path /path/to/rosbag2 \
   --output-dir /tmp/lidarloc_benchmark/run_001 \
+  --ros-domain-id 92 \
+  --bag-duration 60 \
   --system-command "ros2 launch lidar_localization_ros2 lidar_localization.launch.py" \
   --target-process-pattern lidar_localization_node \
   --record-topic /pcl_pose \
   --diagnostic-topic /alignment_status
 ```
 
-`benchmark_runner --bag-duration` is enforced by the runner itself, not by `ros2 bag play`.
-This keeps the same command line working on ROS 2 Humble, where `ros2 bag play` does not accept `--duration`.
+`--bag-duration` is enforced by the runner itself, not by `ros2 bag play`, so the command works on
+ROS 2 Humble.
 
 ### Benchmark another system with the same harness
 
 ```bash
 ros2 run lidar_localization_ros2 benchmark_runner \
   --bag-path /path/to/rosbag2 \
-  --output-dir /tmp/lidarloc_benchmark/autoware_ndt \
+  --output-dir /tmp/lidarloc_benchmark/other_system \
   --system-command "ros2 launch some_other_package some_launch.py" \
   --target-process-pattern some_localizer_executable \
   --record-topic /localization/pose_with_covariance
 ```
 
+Keep bag path, reference CSV, output directory naming, and evaluation command identical when comparing
+two systems.
+
 ## Artifacts
 
-Each run stores:
+Each direct `benchmark_runner` run stores:
 
 - `pose_trace.csv`
 - `alignment_status.csv`
 - `resource_trace.csv`
 - `summary.json`
-- `system.stdout.log`
-- `system.stderr.log`
-- `pose_recorder.stdout.log`
-- `pose_recorder.stderr.log`
-- `diagnostic_recorder.stdout.log`
-- `diagnostic_recorder.stderr.log`
-- `bag_play.stdout.log`
-- `bag_play.stderr.log`
+- process logs for the system, recorders, and bag playback
 
-`summary.json` is intended to be committed or attached to reports.
-
-If the localizer emits reinitialization diagnostics, `alignment_status.csv` also captures:
-
-- `recovery_state`
-- `recovery_action`
-- `recovery_state_age_sec`
-- `reinitialization_requested`
-- `reinitialization_request_reason`
-- `reinitialization_request_score`
-- `reinitialization_request_latched`
+`summary.json`, `trajectory_eval.json`, `health_summary.json`, and comparison JSON files are the
+preferred artifacts to commit or attach to reports. Keep raw bags and large generated outputs outside
+the repository.
 
 ## Evaluate against reference trajectory
-
-The evaluator expects the same CSV column names produced by `benchmark_pose_recorder`.
 
 ```bash
 ros2 run lidar_localization_ros2 benchmark_eval_trajectory \
@@ -505,7 +574,7 @@ ros2 run lidar_localization_ros2 benchmark_eval_trajectory \
   --output-json /tmp/lidarloc_benchmark/run_001/trajectory_eval.json
 ```
 
-To run the same pair through `evo_ape`:
+For `evo_ape` output:
 
 ```bash
 ros2 run lidar_localization_ros2 benchmark_eval_evo_ape \
@@ -515,40 +584,30 @@ ros2 run lidar_localization_ros2 benchmark_eval_evo_ape \
   --save-results-zip /tmp/lidarloc_benchmark/run_001/evo_ape_translation.zip
 ```
 
-Notes:
-
-- default `--pose-relation trans_part` corresponds to translation APE in meters
-- for datasets already expressed in the same map frame, keep the default unaligned evaluation
-- if you need paper-by-paper comparability, make sure the sequence unit and initialization policy also match
-
-To crop a TUM GT trajectory to the time span of a split rosbag2 sequence:
+For split rosbag2 sequences with a TUM GT file:
 
 ```bash
 ros2 run lidar_localization_ros2 tum_trajectory_to_pose_reference_csv_for_rosbag2.py \
-  --input data/public/koide_hard_localization/gt/traj_lidar_outdoor_hard_01.txt \
-  --bag-path data/public/koide_hard_localization/sequences/outdoor_hard_01b/outdoor_hard_01b \
-  --output-csv data/public/koide_hard_localization/benchmark/outdoor_hard_01b/reference.csv \
-  --output-initial-pose-yaml data/public/koide_hard_localization/benchmark/outdoor_hard_01b/initial_pose.yaml \
+  --input /path/to/gt.tum \
+  --bag-path /path/to/rosbag2 \
+  --output-csv /tmp/reference.csv \
+  --output-initial-pose-yaml /tmp/initial_pose.yaml \
   --initial-pose-skip-sec 0.05
 ```
 
-To build a GT-aligned diagnostic map from a PointCloud2 rosbag2 sequence and a
-reference CSV:
+To build a GT-aligned diagnostic map:
 
 ```bash
 ros2 run lidar_localization_ros2 build_gt_aligned_map_from_reference_csv.py \
-  --bag-path data/public/koide_hard_localization/sequences/outdoor_hard_01 \
-  --reference-csv data/public/koide_hard_localization/benchmark/outdoor_hard_01/reference.csv \
+  --bag-path /path/to/rosbag2 \
+  --reference-csv /tmp/reference.csv \
   --cloud-topic /livox/points \
   --point-stride 10 \
   --voxel-size 0.5 \
-  --output-map /tmp/koide_outdoor01_gt_map_stride10_voxel05.ply
+  --output-map /tmp/gt_aligned_map.ply
 ```
 
-This is useful as an engineering check when you suspect map-coverage mismatch.
-When writing `.ply`, the helper emits a binary little-endian float32 PLY (`property float x/y/z`)
-because the runtime stack does not behave reliably with Open3D's default double-precision PLY fields.
-Do not use a map built from the same evaluation run for external performance claims.
+This is an engineering check for map coverage, not an external benchmark map policy.
 
 ## Compare multiple runs
 
@@ -559,82 +618,127 @@ ros2 run lidar_localization_ros2 benchmark_compare_runs \
   --output-json /tmp/lidarloc_benchmark/comparison.json
 ```
 
-For Nav2 replay supervisor-policy comparisons:
-
-```bash
-ros2 run lidar_localization_ros2 compare_nav2_reinit_supervisor_runs.py \
-  --run configured_initial_pose=/tmp/lidarloc_replay_supervisor_120 \
-  --run latest_pose=/tmp/lidarloc_replay_latest_pose_supervisor_120 \
-  --run no_supervisor=/tmp/lidarloc_replay_no_supervisor_120 \
-  --output-json /tmp/lidarloc_nav2_reinit_compare/comparison.json \
-  --output-md /tmp/lidarloc_nav2_reinit_compare/summary.md
-```
-
-To sweep configured-initial-pose burst counts on the same `120 s` replay:
-
-```bash
-ros2 run lidar_localization_ros2 run_nav2_reinit_supervisor_sweep.sh
-```
-
-This writes:
-
-- `artifacts/public/nav2_reinit_supervisor_burst_sweep_120/comparison.json`
-- `artifacts/public/nav2_reinit_supervisor_burst_sweep_120/summary.md`
-
-Current recommendation from that sweep: keep `reinitialization_supervisor_publish_count:=1`.
-
-To run the current long replay regression for the recommended supervisor policy:
+For Nav2 replay supervisor-policy regression:
 
 ```bash
 ros2 run lidar_localization_ros2 run_nav2_reinit_supervisor_regression.sh
 ```
 
-This writes:
-
-- `artifacts/public/nav2_reinit_supervisor_regression_150/comparison.json`
-- `artifacts/public/nav2_reinit_supervisor_regression_150/summary.md`
-- `artifacts/public/nav2_reinit_supervisor_regression_150/regression_result.json`
-
-Current pass criteria:
-
-- both runs finish `navigate_to_pose` with `SUCCEEDED`
-- `no_supervisor` shows at least one reinitialization request
-- `configured_initial_pose_count1` keeps `reinitialization_requested_rows <= 20`
-- `configured_initial_pose_count1` reduces `reinitialization_requested_rows` by at least `10x` vs `no_supervisor`
-- the compare helper recommends `configured_initial_pose_count1`
-
-To run the combined release-style regression boundary:
+For the combined release-style boundary:
 
 ```bash
 ros2 run lidar_localization_ros2 run_release_regression_suite.sh
 ```
 
-This writes:
+Release outputs:
 
 - `artifacts/public/release_regression_suite/summary.json`
 - `artifacts/public/release_regression_suite/summary.md`
 
-and keeps the underlying per-suite artifacts under:
+## Relocalization Artifacts
 
-- `artifacts/public/release_regression_suite/public_regression_suite/`
-- `artifacts/public/release_regression_suite/nav2_reinit_supervisor_regression_150/`
+The v1.1 relocalization path is artifact-first. The public endpoint is a validated dry-run
+`/initialpose` command artifact, not automatic reset publication.
+
+Typical advanced sequence:
+
+1. Summarize alignment health with `summarize_localization_health.py`.
+2. Generate candidate attempts with `make_route_grid_relocalization_attempts.py`.
+3. Create and resolve registration jobs with `make_registration_relocalization_jobs.py` and
+   `resolve_registration_relocalization_scans.py`.
+4. Score bounded jobs with `relocalization_ndt_score_jobs`.
+5. Create and validate a dry-run reset plan with `select_relocalization_reset_candidates.py`,
+   `make_relocalization_reset_commands.py`, and `validate_relocalization_reset_commands.py`.
+
+Use each script's `--help` output for the required CSV paths and thresholds.
+
+Guarded publication is experimental and requires explicit `--execute`:
+
+```bash
+ros2 run lidar_localization_ros2 publish_relocalization_reset_commands.py \
+  --commands-csv /path/to/relocalization_reset_commands.csv \
+  --validation-json /path/to/relocalization_reset_commands_validation.json \
+  --output-csv /path/to/relocalization_reset_command_execution.csv
+```
+
+Without `--execute`, it only writes a no-publish execution report.
+
+## Provided tools
+
+Core run and evaluation:
+
+- `benchmark_runner`
+- `run_lidar_localization_imu_comparison.py`
+- `benchmark_from_manifest`
+- `benchmark_pose_recorder`
+- `benchmark_diagnostic_recorder`
+- `benchmark_eval_trajectory`
+- `benchmark_eval_evo_ape`
+- `benchmark_compare_runs`
+- `benchmark_sweep_localizer`
+
+Dataset preparation:
+
+- `fetch_official_hdl_localization_sample.sh`
+- `fetch_official_autoware_istanbul_dataset.sh`
+- `fetch_koide_hard_pointcloud_localization_dataset.sh`
+- `prepare_koide_hard_relocalization_assets.sh`
+- `run_koide_hard_imu_deskew_smoke.sh`
+- `convert_boreas_sequence_to_rosbag2.py`
+- `scaffold_mapless_public_dataset_bundle.py`
+- `benchmark_make_graph_dataset`
+- `generate_occupancy_map_from_pcd`
+- `benchmark_extract_pose_reference_from_rosbag2`
+- `tum_trajectory_to_pose_reference_csv_for_rosbag2.py`
+- `build_gt_aligned_map_from_reference_csv.py`
+
+Regression and Nav2 comparison:
+
+- `run_public_regression_suite.sh`
+- `run_nav2_replay_smoke`
+- `run_nav2_reinit_supervisor_regression.sh`
+- `run_nav2_reinit_supervisor_sweep.sh`
+- `run_release_regression_suite.sh`
+- `compare_nav2_reinit_supervisor_runs.py`
+
+Relocalization artifact pipeline:
+
+- `summarize_localization_health.py`
+- `summarize_relocalization_attempts.py`
+- `make_disabled_relocalization_attempts.py`
+- `make_route_grid_relocalization_attempts.py`
+- `score_relocalization_candidates_with_reference.py`
+- `make_registration_relocalization_jobs.py`
+- `resolve_registration_relocalization_scans.py`
+- `relocalization_ndt_score_jobs`
+- `summarize_registration_relocalization_scores.py`
+- `compare_registration_relocalization_score_summaries.py`
+- `run_registration_ordering_comparison.py`
+- `select_relocalization_reset_candidates.py`
+- `validate_relocalization_reset_candidate_plan.py`
+- `make_relocalization_reset_commands.py`
+- `validate_relocalization_reset_commands.py`
+- `publish_relocalization_reset_commands.py`
+- `observe_relocalization_reset_execution.py`
+- `build_relocalization_demo_report.py`
 
 ## Recommended metrics
 
-At minimum, compare these metrics across systems and commits:
+At minimum, compare:
 
 - translation RMSE
 - rotation RMSE
-- relocalization success rate
-- relocalization latency
-- lost-track rate
+- matched sample count
+- lost-track or failure-like rows
+- reinitialization request rows and request windows
 - median, p95, and p99 alignment time
 - median and peak CPU usage
 - median and peak memory usage
 
 ## Current limitations
 
-- `benchmark_runner` monitors one target process chosen by a command-line substring match
-- trajectory evaluation uses nearest-timestamp association and assumes synchronized clocks
-- relocalization success rate and lost-track rate still need higher-level task-specific scoring logic
-- the official `hdl_localization` sample still needs a fair initial pose policy before it can be used for final backend ranking
+- `benchmark_runner` monitors one target process selected by substring match.
+- Trajectory evaluation uses nearest-timestamp association and assumes compatible clocks.
+- Relocalization success rate still depends on task-specific scoring outside simple RMSE.
+- The official `hdl_localization` sample still needs a fair initial pose policy before final backend
+  ranking.

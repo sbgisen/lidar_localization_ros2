@@ -13,10 +13,10 @@
 mode: run
 
 dataset:
-  bag_path: /absolute/path/to/data/public/koide_hard_localization/sequences/outdoor_hard_01a
-  map_path: /absolute/path/to/data/public/koide_hard_localization/map_outdoor_hard.ply
-  reference_csv: /absolute/path/to/data/public/koide_hard_localization/benchmark/outdoor_hard_01a/reference.csv
-  initial_pose_yaml: /absolute/path/to/data/public/koide_hard_localization/benchmark/outdoor_hard_01a/initial_pose.yaml
+  bag_path: repo://data/public/koide_hard_localization/sequences/outdoor_hard_01a
+  map_path: repo://data/public/koide_hard_localization/map_outdoor_hard.ply
+  reference_csv: repo://data/public/koide_hard_localization/benchmark/outdoor_hard_01a/reference.csv
+  initial_pose_yaml: repo://data/public/koide_hard_localization/benchmark/outdoor_hard_01a/initial_pose.yaml
   cloud_topic: /livox/points
   imu_topic: /livox/imu
 

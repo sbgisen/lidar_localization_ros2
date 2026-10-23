@@ -86,6 +86,48 @@ Disable the IMU-preintegration path early enough to avoid poisoning localization
 - `streak_guard`: stateful OOP streak detector
 
 
+## Multi-Criteria Measurement Acceptance
+
+Accept degraded-but-consistent registration results that the scalar fitness gate rejects, without accepting stale or contradicted measurements. Motivated by the Koide outdoor_hard_01a window where the ground-truth pose scores ~9.6 against the 6.0 gate and the scalar gate starts a 300-row reject streak.
+
+### Minimal Interface
+
+- `reset() -> None`
+- `step(sample: AcceptanceSample) -> AcceptanceDecision`
+
+### `AcceptanceSample` fields
+
+- `index`
+- `fitness_score`
+- `effective_score_threshold`
+- `correction_translation_m`
+- `correction_yaw_deg`
+- `accepted_gap_sec`
+- `consecutive_rejected_updates`
+
+### `AcceptanceDecision` fields
+
+- `reject_measurement`
+- `reason`
+- `score`
+
+### Shared Fixtures
+
+- `degraded_onset_small_correction_should_reject`: Failure-window onset: score 13.6 over the 6.0 gate with a small correction. The 2026-06-11 hypothesis was to accept this; the 2026-06-12 bounded replay falsified it: degraded accepts above fitness ~12 dragged the anchor (rotation RMSE 1.8->6.1 deg, ok rows 329->193). GT scores ~9.6 in this window, so anything above ~12 is a false maximum even when the correction is small.
+- `degraded_streak_small_correction_should_reject`: Three rejects into the window: score 26.6 with correction 0.75 m. Falsified accept-hypothesis: the 2026-06-12 bounded replay showed fit 18.7/31.9 rows with small corrections are self-confirming false maxima once a degraded accept re-anchors the prediction.
+- `fresh_jump_good_score_should_reject`: Synthetic, derived from the healthy row: a good score (1.5) whose pose jumps 25 m against a 0.4 s old prediction. An aliased match should not be accepted on score alone.
+- `healthy_tracking_should_accept`: Real healthy tracking row; every strategy must accept.
+- `lost_huge_score_should_reject`: Deep in the failure window: score 4354 with a 128 s gap. Unambiguous loss.
+- `stale_prediction_should_reject`: Fifteen rejects in, the prediction is 7.3 s old; a small correction against a stale prediction is no longer evidence.
+
+### Candidate Families
+
+- `fixed_threshold`: scalar fitness threshold (runtime baseline)
+- `bounded_degraded`: correction cross-check with non-resetting degraded-accept budget
+- `correction_conditioned`: fitness threshold + correction/staleness cross-check
+- `score_ratio_budget`: relative score cap with gap/streak budget
+
+
 ## Recovery Action Selection
 
 Choose whether to keep open-loop prediction, reuse a rejected seed, or retry from the last accepted pose after a failed measurement.
@@ -163,3 +205,43 @@ Decide when bounded local recovery should stop and the system should escalate to
 - `gap_streak_score_reinit`: scorecard threshold
 - `failure_kind_eager_reinit`: event-driven rule table
 - `never_reinit`: minimal baseline
+
+
+## Startup False-Convergence Integrity Monitor
+
+Detect a self-consistent but wrong NDT basin during the first five accepted updates, where scalar fitness remains healthy, without rejecting bounded Koide indoor startups.
+
+### Minimal Interface
+
+- `reset() -> None`
+- `step(sample: StartupIntegritySample) -> StartupIntegrityDecision`
+
+### `StartupIntegritySample` fields
+
+- `index`
+- `fitness_score`
+- `correction_translation_m`
+- `correction_yaw_deg`
+
+### `StartupIntegrityDecision` fields
+
+- `request_reinitialization`
+- `reason`
+- `score`
+
+### Shared Fixtures
+
+- `koide_indoor_easy_01`: Bounded Koide indoor_easy_01 startup; any trigger is a false positive.
+- `koide_indoor_easy_02`: Bounded Koide indoor_easy_02 startup with a 0.39 m first correction; it must not trigger.
+- `koide_indoor_easy_02_live_r02`: A second bounded indoor_easy_02 replay with larger startup corrections; it exposes false-trigger overfitting.
+- `koide_indoor_hard_01`: Initially bounded Koide indoor_hard_01 startup; a detector must not pre-emptively trigger.
+- `koide_indoor_kidnap_01`: Koide indoor_kidnap_01 aliases to a wrong pose despite low NDT fitness; trigger by update four.
+- `koide_indoor_kidnap_01_live_r02`: A second aliased indoor_kidnap_01 replay with bounded first-five corrections; it exposes missed detections.
+- `koide_indoor_kidnap_02`: Koide indoor_kidnap_02 diverges through moderate repeated corrections; trigger by update four.
+
+### Candidate Families
+
+- `peak_innovation`: single-update translation or yaw correction threshold
+- `cumulative_translation`: startup cumulative translation-correction budget
+- `normalized_innovation_energy`: startup normalized translation/yaw correction energy
+- `fitness_only`: scalar NDT fitness threshold

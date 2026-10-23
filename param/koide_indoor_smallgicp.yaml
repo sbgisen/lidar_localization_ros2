@@ -1,3 +1,6 @@
+# Preset: Koide indoor sequence using the optional SMALL_GICP backend.
+# Status: dataset-specific backend comparison; requires small_gicp support.
+
 /**:
   ros__parameters:
     # SMALL_GICP with NDT initializer for indoor depth camera data.
@@ -35,6 +38,7 @@
     max_twist_prediction_dt: 0.5
     use_imu: false
     use_imu_preintegration: false
+    imu_preintegration_use_base_frame_transform: false
     enable_reinitialization_request_output: false
     enable_debug: false
     predict_pose_from_previous_delta: true

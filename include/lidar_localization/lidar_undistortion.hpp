@@ -8,6 +8,7 @@
 #include <Eigen/Core>
 #include <Eigen/Geometry>
 #include <iostream>
+#include <array>
 
 class LidarUndistortion
 {
@@ -34,12 +35,6 @@ public:
     imu_roll_[imu_ptr_last_] = roll;
     imu_pitch_[imu_ptr_last_] = pitch;
     imu_yaw_[imu_ptr_last_] = yaw;
-    imu_acc_x_[imu_ptr_last_] = acc.x();
-    imu_acc_y_[imu_ptr_last_] = acc.y();
-    imu_acc_z_[imu_ptr_last_] = acc.z();
-    imu_angular_velo_x_[imu_ptr_last_] = angular_velo.x();
-    imu_angular_velo_y_[imu_ptr_last_] = angular_velo.y();
-    imu_angular_velo_z_[imu_ptr_last_] = angular_velo.z();
 
     Eigen::Matrix3f rot = quat.toRotationMatrix();
     acc = rot * acc;
@@ -121,7 +116,7 @@ public:
       if (imu_ptr_last_ > 0) {
         imu_ptr_front_ = imu_ptr_last_iter_;
         while (imu_ptr_front_ != imu_ptr_last_) {
-          if (scan_time + rel_time > imu_time_[imu_ptr_front_]) {
+          if (scan_time + rel_time < imu_time_[imu_ptr_front_]) {
             break;
           }
           imu_ptr_front_ = (imu_ptr_front_ + 1) % imu_que_length_;
@@ -195,27 +190,21 @@ private:
   static const int imu_que_length_{200};
   int imu_ptr_front_{0}, imu_ptr_last_{-1}, imu_ptr_last_iter_{0};
 
-  std::array<double, imu_que_length_> imu_time_;
-  std::array<float, imu_que_length_> imu_roll_;
-  std::array<float, imu_que_length_> imu_pitch_;
-  std::array<float, imu_que_length_> imu_yaw_;
+  std::array<double, imu_que_length_> imu_time_{};
+  std::array<float, imu_que_length_> imu_roll_{};
+  std::array<float, imu_que_length_> imu_pitch_{};
+  std::array<float, imu_que_length_> imu_yaw_{};
 
-  std::array<float, imu_que_length_> imu_acc_x_;
-  std::array<float, imu_que_length_> imu_acc_y_;
-  std::array<float, imu_que_length_> imu_acc_z_;
-  std::array<float, imu_que_length_> imu_velo_x_;
-  std::array<float, imu_que_length_> imu_velo_y_;
-  std::array<float, imu_que_length_> imu_velo_z_;
-  std::array<float, imu_que_length_> imu_shift_x_;
-  std::array<float, imu_que_length_> imu_shift_y_;
-  std::array<float, imu_que_length_> imu_shift_z_;
+  std::array<float, imu_que_length_> imu_velo_x_{};
+  std::array<float, imu_que_length_> imu_velo_y_{};
+  std::array<float, imu_que_length_> imu_velo_z_{};
+  std::array<float, imu_que_length_> imu_shift_x_{};
+  std::array<float, imu_que_length_> imu_shift_y_{};
+  std::array<float, imu_que_length_> imu_shift_z_{};
 
-  std::array<float, imu_que_length_> imu_angular_velo_x_;
-  std::array<float, imu_que_length_> imu_angular_velo_y_;
-  std::array<float, imu_que_length_> imu_angular_velo_z_;
-  std::array<float, imu_que_length_> imu_angular_rot_x_;
-  std::array<float, imu_que_length_> imu_angular_rot_y_;
-  std::array<float, imu_que_length_> imu_angular_rot_z_;
+  std::array<float, imu_que_length_> imu_angular_rot_x_{};
+  std::array<float, imu_que_length_> imu_angular_rot_y_{};
+  std::array<float, imu_que_length_> imu_angular_rot_z_{};
 };
 
 #endif  // LIDAR_UNDISTORTION_HPP_

@@ -19,6 +19,8 @@ public:
   static constexpr int POSE_DIM = 9;
   static constexpr int BIAS_DIM = 6;
 
+  // --- Configuration ---
+
   struct Params
   {
     // NDT measurement noise (6DOF)
@@ -33,6 +35,8 @@ public:
     double fitness_reject = 50.0;
     double huber_k = 1.345;
     int window_size = 50;
+    double min_imu_factor_dt = 0.02;
+    double imu_factor_covariance_regularization = 1e-9;
 
     // Bias prior sigma
     double bias_prior_sigma_gyro = 0.01;
@@ -48,6 +52,8 @@ public:
   Eigen::Vector3d gyro_bias_ = Eigen::Vector3d::Zero();
   Eigen::Vector3d accel_bias_ = Eigen::Vector3d::Zero();
 
+  // --- Initialization and IMU integration ---
+
   bool isInitialized() const { return initialized_; }
 
   void initialize(
@@ -56,16 +62,31 @@ public:
     double vx, double vy, double vz,
     double stamp_sec)
   {
+    initializeState(
+      Eigen::Vector3d(x, y, z),
+      so3::eulerToRotation(roll, pitch, yaw),
+      Eigen::Vector3d(vx, vy, vz),
+      Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero(), stamp_sec);
+  }
+
+  void initializeState(
+    const Eigen::Vector3d & position,
+    const Eigen::Matrix3d & rotation,
+    const Eigen::Vector3d & velocity,
+    const Eigen::Vector3d & gyro_bias,
+    const Eigen::Vector3d & accel_bias,
+    double stamp_sec)
+  {
     PoseEntry entry;
-    entry.position = Eigen::Vector3d(x, y, z);
-    entry.velocity = Eigen::Vector3d(vx, vy, vz);
-    entry.R = so3::eulerToRotation(roll, pitch, yaw);
+    entry.position = position;
+    entry.velocity = velocity;
+    entry.R = rotation;
     entry.has_imu_factor = false;
     entry.has_ndt = false;
     poses_.clear();
     poses_.push_back(entry);
-    gyro_bias_.setZero();
-    accel_bias_.setZero();
+    gyro_bias_ = gyro_bias;
+    accel_bias_ = accel_bias;
     dr_p_ = entry.position;
     dr_v_ = entry.velocity;
     dr_R_ = entry.R;
@@ -74,6 +95,23 @@ public:
     // Reset IMU accumulation
     current_preint_.reset();
     current_preint_.params = params_.imu_params;
+    current_preint_gyro_bias_ = gyro_bias_;
+    current_preint_accel_bias_ = accel_bias_;
+  }
+
+  /// Discard only the not-yet-corrected IMU interval. Optimized window states,
+  /// velocity, and biases remain intact so the same raw tail can be repropagated.
+  void resetPendingIntegration()
+  {
+    if (!initialized_ || poses_.empty()) return;
+    const auto & latest = poses_.back();
+    dr_p_ = latest.position;
+    dr_v_ = latest.velocity;
+    dr_R_ = latest.R;
+    current_preint_.reset();
+    current_preint_.params = params_.imu_params;
+    current_preint_gyro_bias_ = gyro_bias_;
+    current_preint_accel_bias_ = accel_bias_;
   }
 
   /// Accumulate one IMU sample (called at IMU rate ~200Hz)
@@ -84,11 +122,13 @@ public:
     current_preint_.integrate(gyro, accel, gyro_bias_, accel_bias_, dt);
     // Dead-reckoning for init_guess
     Eigen::Vector3d acc_world = dr_R_ * (accel - accel_bias_) + params_.imu_params.gravity;
-    dr_v_ += acc_world * dt;
     dr_p_ += dr_v_ * dt + 0.5 * acc_world * dt * dt;
+    dr_v_ += acc_world * dt;
     Eigen::Vector3d omega = gyro - gyro_bias_;
     dr_R_ = dr_R_ * so3::Exp(omega * dt);
   }
+
+  // --- Measurement updates ---
 
   /// Update with GICP/NDT measurement at scan time
   bool update(
@@ -110,7 +150,9 @@ public:
 
     // Store IMU preintegration as between-factor
     entry.preint = current_preint_;
-    entry.has_imu_factor = (current_preint_.dt_sum > 0.001);
+    entry.preint_gyro_bias = current_preint_gyro_bias_;
+    entry.preint_accel_bias = current_preint_accel_bias_;
+    entry.has_imu_factor = (current_preint_.dt_sum >= params_.min_imu_factor_dt);
 
     // Store NDT measurement
     entry.has_ndt = true;
@@ -137,15 +179,61 @@ public:
     // Reset preintegration for next interval
     current_preint_.reset();
     current_preint_.params = params_.imu_params;
+    current_preint_gyro_bias_ = gyro_bias_;
+    current_preint_accel_bias_ = accel_bias_;
 
     last_stamp_ = stamp_sec;
     return true;
   }
 
-  // Accessors
+  /// Advance the correction anchor across an accepted LiDAR observation when
+  /// causal IMU coverage is incomplete. No between-factor is invented for the
+  /// gap and the existing window is not re-optimized through a disconnected
+  /// state; optimized velocity and biases are carried into later
+  /// repropagation unchanged.
+  bool updatePoseOnly(
+    double px, double py, double pz,
+    double roll, double pitch, double yaw,
+    double fitness_score, double stamp_sec)
+  {
+    if (!initialized_ || fitness_score > params_.fitness_reject) return false;
+
+    PoseEntry entry;
+    entry.position = Eigen::Vector3d(px, py, pz);
+    entry.velocity = poses_.back().velocity;
+    entry.R = so3::eulerToRotation(roll, pitch, yaw);
+    entry.has_imu_factor = false;
+    entry.has_ndt = true;
+    entry.ndt_position = entry.position;
+    entry.ndt_R = entry.R;
+    entry.ndt_fitness = fitness_score;
+    poses_.push_back(entry);
+    while (static_cast<int>(poses_.size()) > params_.window_size) {
+      poses_.pop_front();
+    }
+
+    dr_p_ = entry.position;
+    dr_v_ = entry.velocity;
+    dr_R_ = entry.R;
+    current_preint_.reset();
+    current_preint_.params = params_.imu_params;
+    current_preint_gyro_bias_ = gyro_bias_;
+    current_preint_accel_bias_ = accel_bias_;
+    last_stamp_ = stamp_sec;
+    return true;
+  }
+
+  // --- Accessors ---
+
   double px() const { return poses_.back().position.x(); }
   double py() const { return poses_.back().position.y(); }
   double pz() const { return poses_.back().position.z(); }
+  Eigen::Vector3d velocity() const { return poses_.back().velocity; }
+  Eigen::Vector3d position() const { return poses_.back().position; }
+  Eigen::Matrix3d rotation() const { return poses_.back().R; }
+  Eigen::Vector3d gyroBias() const { return gyro_bias_; }
+  Eigen::Vector3d accelBias() const { return accel_bias_; }
+  std::size_t poseCount() const { return poses_.size(); }
 
   /// Get latest optimized pose as 4x4 matrix
   Eigen::Matrix4f poseMatrix() const
@@ -167,6 +255,8 @@ public:
   }
 
 private:
+  // --- Window state ---
+
   struct PoseEntry
   {
     Eigen::Vector3d position = Eigen::Vector3d::Zero();
@@ -175,6 +265,8 @@ private:
 
     // IMU between-factor to this pose from previous
     ImuPreintegration preint;
+    Eigen::Vector3d preint_gyro_bias = Eigen::Vector3d::Zero();
+    Eigen::Vector3d preint_accel_bias = Eigen::Vector3d::Zero();
     bool has_imu_factor = false;
 
     // NDT measurement
@@ -190,11 +282,15 @@ private:
 
   // Current preintegration being accumulated
   ImuPreintegration current_preint_;
+  Eigen::Vector3d current_preint_gyro_bias_ = Eigen::Vector3d::Zero();
+  Eigen::Vector3d current_preint_accel_bias_ = Eigen::Vector3d::Zero();
 
   // Dead-reckoning state for init_guess prediction
   Eigen::Vector3d dr_p_ = Eigen::Vector3d::Zero();
   Eigen::Vector3d dr_v_ = Eigen::Vector3d::Zero();
   Eigen::Matrix3d dr_R_ = Eigen::Matrix3d::Identity();
+
+  // --- Sliding-window Gauss-Newton optimization ---
 
   void optimize()
   {
@@ -210,8 +306,19 @@ private:
 
       // --- 1. Anchor prior on first pose ---
       double anchor_w = 1e6;
-      for (int k = 0; k < POSE_DIM; ++k) {
+      for (int k = 0; k < 3; ++k) {
         H(k, k) += anchor_w;
+        H(6 + k, 6 + k) += anchor_w;
+      }
+
+      // Velocity is only weakly observed when an interval has too little IMU
+      // data to form a stable factor. Keep those dimensions numerically tame.
+      double velocity_prior_w = 1e-6;
+      for (int i = 0; i < n; ++i) {
+        const int idx = i * POSE_DIM;
+        for (int k = 3; k < 6; ++k) {
+          H(idx + k, idx + k) += velocity_prior_w;
+        }
       }
 
       // --- 2. IMU between-factors ---
@@ -220,21 +327,29 @@ private:
 
         const auto & pi = poses_[i - 1];
         const auto & pj = poses_[i];
-        const auto & preint = pj.preint;
+        const auto & stored_preint = pj.preint;
+        ImuPreintegration corrected_preint = stored_preint;
+        corrected_preint.correctByBias(
+          gyro_bias_ - pj.preint_gyro_bias,
+          accel_bias_ - pj.preint_accel_bias);
 
         // Compute residual
-        Eigen::Matrix<double, 9, 1> r = preint.computeResidual(
+        Eigen::Matrix<double, 9, 1> r = corrected_preint.computeResidual(
           pi.position, pi.velocity, pi.R,
           pj.position, pj.velocity, pj.R);
 
         // Information from preintegration covariance
+        Eigen::Matrix<double, 9, 9> covariance = stored_preint.covariance;
+        covariance.diagonal().array() += params_.imu_factor_covariance_regularization;
+        if (!covariance.allFinite()) continue;
         Eigen::Matrix<double, 9, 9> info =
-          preint.covariance.inverse().eval();
+          covariance.ldlt().solve(Eigen::Matrix<double, 9, 9>::Identity());
+        if (!info.allFinite()) continue;
         // Symmetrize
         info = 0.5 * (info + info.transpose());
 
         // Jacobians w.r.t. pose_i [p, v, theta] and pose_j [p, v, theta]
-        double dt = preint.dt_sum;
+        double dt = stored_preint.dt_sum;
         const Eigen::Vector3d & g = params_.imu_params.gravity;
         Eigen::Matrix3d Ri_T = pi.R.transpose();
 
@@ -263,16 +378,12 @@ private:
         // dr/d(biases) [9x3 for bg, 9x3 for ba]
         Eigen::Matrix<double, 9, 3> Jbg = Eigen::Matrix<double, 9, 3>::Zero();
         Eigen::Matrix<double, 9, 3> Jba = Eigen::Matrix<double, 9, 3>::Zero();
-        Jbg.block<3, 3>(0, 0) = -preint.d_dp_d_bg;
-        Jbg.block<3, 3>(3, 0) = -preint.d_dv_d_bg;
-        Jbg.block<3, 3>(6, 0) = -Jr_inv_r * so3::Exp(r_theta).transpose() *
-                                  so3::Jr(preint.d_dR_d_bg * (gyro_bias_ - gyro_bias_)) *
-                                  preint.d_dR_d_bg;
-        // Simplified: for small bias changes, this ≈ -Jr_inv_r * preint.d_dR_d_bg
-        Jbg.block<3, 3>(6, 0) = -Jr_inv_r * preint.d_dR_d_bg;
+        Jbg.block<3, 3>(0, 0) = -stored_preint.d_dp_d_bg;
+        Jbg.block<3, 3>(3, 0) = -stored_preint.d_dv_d_bg;
+        Jbg.block<3, 3>(6, 0) = -Jr_inv_r * stored_preint.d_dR_d_bg;
 
-        Jba.block<3, 3>(0, 0) = -preint.d_dp_d_ba;
-        Jba.block<3, 3>(3, 0) = -preint.d_dv_d_ba;
+        Jba.block<3, 3>(0, 0) = -stored_preint.d_dp_d_ba;
+        Jba.block<3, 3>(3, 0) = -stored_preint.d_dv_d_ba;
 
         int idx_i = (i - 1) * POSE_DIM;
         int idx_j = i * POSE_DIM;
@@ -350,11 +461,25 @@ private:
 
       // --- 4. Bias prior factor ---
       {
-        double info_bg = 1.0 / (params_.bias_prior_sigma_gyro * params_.bias_prior_sigma_gyro);
-        double info_ba = 1.0 / (params_.bias_prior_sigma_accel * params_.bias_prior_sigma_accel);
+        double window_duration_sec = 0.0;
+        for (int i = 1; i < n; ++i) {
+          if (poses_[i].has_imu_factor) {
+            window_duration_sec += poses_[i].preint.dt_sum;
+          }
+        }
+        const double gyro_bias_variance = imuBiasPriorVariance(
+          params_.bias_prior_sigma_gyro,
+          params_.imu_params.gyro_random_walk,
+          window_duration_sec);
+        const double accel_bias_variance = imuBiasPriorVariance(
+          params_.bias_prior_sigma_accel,
+          params_.imu_params.accel_random_walk,
+          window_duration_sec);
+        double info_bg = 1.0 / gyro_bias_variance;
+        double info_ba = 1.0 / accel_bias_variance;
         for (int k = 0; k < 3; ++k) {
           H(bias_offset + k, bias_offset + k) += info_bg;
-          b(bias_offset + k) += info_bg * gyro_bias_(k);  // prior at current estimate
+          b(bias_offset + k) += info_bg * gyro_bias_(k);
         }
         for (int k = 0; k < 3; ++k) {
           H(bias_offset + 3 + k, bias_offset + 3 + k) += info_ba;
